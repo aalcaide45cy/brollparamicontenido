@@ -11,30 +11,86 @@ const state = {
 };
 
 // === ESCALADO Y ZOOM DE INTERFAZ ===
-function applyZoom(val) {
-    const scale = parseFloat(val);
+function applyZoom(val, saveServer = false) {
+    const scale = Math.round(parseFloat(val) * 100) / 100;
+    const pct = Math.round(scale * 100);
     document.documentElement.style.zoom = scale;
-    localStorage.setItem('capa_cero_zoom', val);
+    localStorage.setItem('capa_cero_zoom', scale.toFixed(2));
+
     const selector = document.getElementById('zoom-selector');
-    if (selector) selector.value = val;
+    if (selector) {
+        let found = false;
+        for (let opt of selector.options) {
+            if (Math.abs(parseFloat(opt.value) - scale) < 0.01) {
+                selector.value = opt.value;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            let customOpt = selector.querySelector('option[data-custom="true"]');
+            if (!customOpt) {
+                customOpt = document.createElement('option');
+                customOpt.setAttribute('data-custom', 'true');
+                customOpt.className = 'bg-gray-900 text-gray-100';
+                customOpt.style.backgroundColor = '#111827';
+                customOpt.style.color = '#F3F4F6';
+                selector.appendChild(customOpt);
+            }
+            customOpt.value = scale.toFixed(2);
+            customOpt.text = `Zoom ${pct}%`;
+            selector.value = scale.toFixed(2);
+        }
+    }
+
+    if (saveServer) {
+        // Persistir zoom en config.json
+        fetch('/api/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ui_zoom: `${pct}%` })
+        }).catch(() => {});
+    }
 }
 
 function adjustZoom(delta) {
     let current = parseFloat(localStorage.getItem('capa_cero_zoom') || '1.15');
-    current = Math.min(Math.max(current + delta, 0.9), 1.6);
-    const rounded = (Math.round(current * 100) / 100).toString();
-    applyZoom(rounded);
+    current = Math.min(Math.max(current + delta, 0.85), 1.60);
+    const rounded = Math.round(current * 100) / 100;
+    applyZoom(rounded, true);
 }
 
 function changeZoomSelect(val) {
-    applyZoom(val);
+    applyZoom(val, true);
 }
 
 // Inicialización al cargar la página
 document.addEventListener('DOMContentLoaded', async () => {
     // Restaurar zoom preferido (por defecto 115% para nitidez en 2K/4K)
     const savedZoom = localStorage.getItem('capa_cero_zoom') || '1.15';
-    applyZoom(savedZoom);
+    applyZoom(savedZoom, false);
+
+    // Limpiar cualquier residuo de autofill de credenciales en notas tecnicas
+    const cleanAutofill = () => {
+        const ctxInput = document.getElementById('script-context');
+        if (ctxInput && (ctxInput.value === 'aalcaide45' || ctxInput.value.toLowerCase().includes('aalcaide'))) {
+            ctxInput.value = '';
+        }
+    };
+    cleanAutofill();
+    setTimeout(cleanAutofill, 250);
+    setTimeout(cleanAutofill, 800);
+
+    // Listener para buscar B-Roll pulsando Enter en el input
+    const brollInput = document.getElementById('broll-search-input');
+    if (brollInput) {
+        brollInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                searchBroll();
+            }
+        });
+    }
 
     await loadSettings();
     await loadProjectsList();
@@ -608,19 +664,29 @@ async function loadSettings() {
         const cfg = await resp.json();
         state.config = cfg;
 
+        // Sincronizar zoom si viene en la configuracion
+        if (cfg.ui_zoom && !localStorage.getItem('capa_cero_zoom')) {
+            const parsedZoom = parseFloat(cfg.ui_zoom) / 100;
+            if (!isNaN(parsedZoom) && parsedZoom > 0.5) applyZoom(parsedZoom, false);
+        }
+
         document.getElementById('cfg-download-path').value = cfg.download_path || '';
         
-        // Cargar claves de Gemini (soporta lista o string)
-        const keysList = cfg.gemini_api_keys && cfg.gemini_api_keys.length > 0
+        // Cargar claves de Gemini (filtrando contraseñas accidentales)
+        let keysList = cfg.gemini_api_keys && cfg.gemini_api_keys.length > 0
             ? cfg.gemini_api_keys.join('\n')
             : (cfg.gemini_api_key || '');
+        if (keysList.includes('Seatleon')) keysList = '';
         document.getElementById('cfg-gemini-key').value = keysList;
 
         if (document.getElementById('cfg-gemini-model')) {
             document.getElementById('cfg-gemini-model').value = cfg.gemini_model || 'gemini-2.0-flash';
         }
 
-        document.getElementById('cfg-pexels-key').value = cfg.pexels_api_key || '';
+        let pexelsKey = cfg.pexels_api_key || '';
+        if (pexelsKey.includes('Seatleon')) pexelsKey = '';
+        document.getElementById('cfg-pexels-key').value = pexelsKey;
+
         document.getElementById('cfg-pixabay-key').value = cfg.pixabay_api_key || '';
         document.getElementById('cfg-ai-provider').value = cfg.ai_provider || 'gemini';
         document.getElementById('cfg-youtube-template').value = cfg.youtube_fixed_template || '';

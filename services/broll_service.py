@@ -105,69 +105,104 @@ async def search_broll_pixabay(query: str, api_key: str, per_page: int = 15) -> 
     return results
 
 
-# Glosario de traducción rápida para bancos de stock en inglés
-STOCK_TRANSLATION_MAP = {
-    "impresora 3d": "3d printer",
-    "impresion 3d": "3d printing",
-    "imprimiendo": "3d printing timelapse",
-    "soporte": "support tree",
-    "soportes": "tree supports 3d printing",
-    "soportes en arbol": "tree support 3d printing",
-    "cama caliente": "heated bed build plate",
-    "placa pei": "pei sheet build plate",
-    "boquilla": "3d printer nozzle",
-    "boquillas": "brass nozzle extruder",
-    "filamento": "3d printing filament spool",
-    "extrusor": "direct drive extruder",
-    "atasco": "clogged extruder nozzle",
-    "purga": "filament purge poop",
-    "resina": "resin 3d printer",
-    "calibracion": "bed leveling 3d printer",
-    "taller": "maker lab workshop 3d printer",
-    "robotica": "robotics engineering technology",
-    "tecnologia": "modern technology high tech",
-    "ordenador": "computer cad design 3d model",
-    "diseno": "cad 3d design modeling",
+# Stop words en espanol para no enviar conectores vacios a APIs en ingles
+SPANISH_STOP_WORDS = {
+    "de", "del", "la", "el", "en", "un", "una", "los", "las", "para",
+    "con", "por", "al", "sobre", "y", "o", "un", "su", "sus", "como"
+}
+
+# Mapeo semantico de conceptos tecnicos maker a terminos de busqueda optimos para Pexels y Pixabay
+CONCEPT_SEARCH_MAP = {
+    "purga de filamento": ["3d printer filament", "3d printer nozzle", "3d printing"],
+    "purga": ["3d printer filament", "3d printer nozzle", "3d printing"],
+    "filamento": ["3d printer filament", "3d printing filament", "3d printer"],
+    "impresora 3d": ["3d printer", "3d printing timelapse"],
+    "impresion 3d": ["3d printing", "3d printer close up"],
+    "imprimiendo": ["3d printing timelapse", "3d printer"],
+    "boquilla": ["3d printer nozzle", "3d printer extruder"],
+    "boquillas": ["3d printer nozzle", "3d printer extruder"],
+    "cama caliente": ["3d printer bed", "3d printing surface"],
+    "placa pei": ["3d printer bed", "3d printing"],
+    "soporte": ["3d printer supports", "3d printing"],
+    "soportes": ["3d printer supports", "3d printing"],
+    "soportes en arbol": ["tree supports 3d printing", "3d printer"],
+    "extrusor": ["3d printer extruder", "direct drive extruder"],
+    "atasco": ["3d printer nozzle", "3d printer extruder"],
+    "resina": ["resin 3d printer", "sla 3d printing"],
+    "calibracion": ["3d printer bed leveling", "3d printer calibration"],
+    "timelapse": ["3d printer timelapse", "3d printing timelapse"],
+    "taller": ["maker lab 3d printer", "maker workshop"],
+    "robotica": ["robotics engineering", "robot arm technology"],
+    "tecnologia": ["modern technology", "engineering lab"],
 }
 
 
 def expand_query_multilingual(query: str) -> List[str]:
-    """Expande y traduce la consulta a inglés para encontrar x10 más vídeos en Pexels y Pixabay."""
-    queries = [query.strip()]
+    """Expande la consulta en espanol hacia terminos precisos en ingles para Pexels y Pixabay."""
     q_lower = query.lower().strip()
+    queries: List[str] = []
 
-    # Reemplazo de frases compuestas primero (orden descendente por longitud)
-    expanded_english = q_lower
-    has_match = False
-    sorted_terms = sorted(STOCK_TRANSLATION_MAP.items(), key=lambda x: len(x[0]), reverse=True)
-    for es_term, en_term in sorted_terms:
-        if es_term in expanded_english:
-            expanded_english = expanded_english.replace(es_term, en_term)
-            has_match = True
+    # 1. Detectar conceptos maker prioritarios (frases largas primero)
+    for es_term, en_list in sorted(CONCEPT_SEARCH_MAP.items(), key=lambda x: len(x[0]), reverse=True):
+        if es_term in q_lower:
+            for item in en_list:
+                if item not in queries:
+                    queries.append(item)
 
-    if has_match and expanded_english != q_lower:
-        queries.append(expanded_english)
+    # 2. Si no hubo coincidencia directa en el mapa, limpiar conectores en espanol
+    if not queries:
+        words = [w for w in q_lower.split() if w not in SPANISH_STOP_WORDS]
+        cleaned = " ".join(words)
+        if cleaned:
+            queries.append(cleaned)
+            if "3d" not in cleaned:
+                queries.append(f"3d printing {cleaned}")
 
-    # Si la consulta no tiene "3d printer" y es técnica, añadir variante contextual
-    if any(k in q_lower for k in ["filamento", "cama", "soporte", "boquilla", "purga", "capa", "nozzle"]):
-        if "3d" not in expanded_english:
-            queries.append(f"3d printing {expanded_english}")
+    # Asegurar un maximo de 3 consultas muy enfocadas
+    return queries[:3]
 
-    return list(dict.fromkeys(queries))
+
+def calculate_clip_relevance(clip: Dict[str, Any], original_query: str) -> int:
+    """Calcula la relevancia del clip para priorizar videos reales de impresion 3D y descartar ruido."""
+    tags = str(clip.get("title", "")).lower()
+    score = 0
+
+    # Palabras clave de alta relevancia en impresion 3D
+    if "3d printer" in tags or "3d printing" in tags:
+        score += 50
+    if "printer" in tags and "3d" in tags:
+        score += 40
+    if "filament" in tags or "nozzle" in tags or "extruder" in tags:
+        score += 35
+    if "maker" in tags or "engineering" in tags:
+        score += 20
+    if "machine" in tags or "robot" in tags or "technology" in tags:
+        score += 10
+
+    # Ruido tipico devuelto por Pixabay cuando no hay coincidencia exacta
+    bad_tags = ["earth", "planet", "wormhole", "space", "galaxy", "light bulb", "bulb", "lamp", "skull", "skeleton", "candle"]
+    if any(b in tags for b in bad_tags):
+        score -= 80
+
+    return score
 
 
 async def search_all_broll(query: str, limit: int = 80) -> List[Dict[str, Any]]:
-    """Busca masivamente clips en todas las plataformas combinando términos en español e inglés."""
+    """Busca masivamente clips en todas las plataformas combinando terminos tecnicos precisos."""
     config = load_config()
     pexels_key = config.get("pexels_api_key", "").strip()
     pixabay_key = config.get("pixabay_api_key", "").strip()
+
+    # Ignorar posibles contrasenas autocompletadas por el navegador
+    if pexels_key and "Seatleon" in pexels_key:
+        pexels_key = ""
 
     queries = expand_query_multilingual(query)
     all_results = []
     seen_ids = set()
 
     for q in queries:
-        # Búsqueda en Pexels (hasta 50 por término)
+        # Busqueda en Pexels (hasta 40 por termino)
         if pexels_key:
             p_res = await search_broll_pexels(q, pexels_key, per_page=40)
             for r in p_res:
@@ -175,13 +210,21 @@ async def search_all_broll(query: str, limit: int = 80) -> List[Dict[str, Any]]:
                     seen_ids.add(r["id"])
                     all_results.append(r)
 
-        # Búsqueda en Pixabay (hasta 50 por término)
+        # Busqueda en Pixabay (hasta 40 por termino)
         if pixabay_key:
             px_res = await search_broll_pixabay(q, pixabay_key, per_page=40)
             for r in px_res:
                 if r["id"] not in seen_ids:
                     seen_ids.add(r["id"])
                     all_results.append(r)
+
+    # Ordenar por relevancia para que los clips reales de impresion 3D aparezcan primero
+    all_results.sort(key=lambda c: calculate_clip_relevance(c, query), reverse=True)
+
+    # Filtrar clips que tengan score fuertemente negativo (ruido espacial/bombillas)
+    filtered = [c for c in all_results if calculate_clip_relevance(c, query) >= 0]
+    if filtered:
+        all_results = filtered
 
     # Fallback demo enriquecido si no hay claves configuradas
     if not all_results:
