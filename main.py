@@ -304,6 +304,6 @@ if WEB_DIR.exists():
 
 
 if __name__ == "__main__":
-    # Vinculación estricta a 127.0.0.1 (Localhost) para evitar alertas del Firewall de Windows
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+    # Vinculación estricta a 127.0.0.1 (Localhost) sin recarga automática para evitar bloqueos por descargas masivas o cambios de archivos
+    uvicorn.run(app, host="127.0.0.1", port=8000, reload=False)
 

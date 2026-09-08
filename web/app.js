@@ -175,10 +175,17 @@ function renderTopicHistory() {
 }
 
 // Inicialización al cargar la página
-document.addEventListener('DOMContentLoaded', async () => {
-    // Restaurar zoom preferido (por defecto 115% para nitidez en 2K/4K)
+document.addEventListener('DOMContentLoaded', () => {
+    // 1. Restaurar interfaz inmediatamente y sin esperar a la red (sincrónico)
     const savedZoom = localStorage.getItem('capa_cero_zoom') || '1.15';
     applyZoom(savedZoom, false);
+
+    // Restaurar pestaña activa anterior (sobrevive a F5)
+    const savedTab = localStorage.getItem('capa_cero_active_tab') || 'tab-script';
+    switchTab(savedTab);
+
+    // Restaurar borradores de texto de formularios (sobrevive a F5)
+    restoreFormDrafts();
 
     // Cargar historial de temas en pantalla
     renderTopicHistory();
@@ -186,8 +193,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Cerrar menú de historial al hacer clic fuera
     document.addEventListener('click', (e) => {
         const menu = document.getElementById('topic-history-menu');
-        if (menu && !menu.classList.contains('hidden') && !e.target.closest('#topic-history-menu') && !e.target.closest('button[onclick*="toggleTopicHistory"]')) {
-            menu.classList.add('hidden');
+        if (menu && !menu.classList.contains('hidden')) {
+            const targetEl = e.target && e.target.nodeType === 1 ? e.target : (e.target ? e.target.parentElement : null);
+            if (targetEl && typeof targetEl.closest === 'function') {
+                if (!targetEl.closest('#topic-history-menu') && !targetEl.closest('button[onclick*="toggleTopicHistory"]')) {
+                    menu.classList.add('hidden');
+                }
+            }
         }
     });
 
@@ -213,17 +225,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     }
 
-    await loadSettings();
-    await loadProjectsList();
-    await loadModelsStatus();
-
-    // Restaurar pestaña activa anterior (sobrevive a F5)
-    const savedTab = localStorage.getItem('capa_cero_active_tab') || 'tab-script';
-    switchTab(savedTab);
-
-    // Restaurar borradores de texto de formularios (sobrevive a F5)
-    restoreFormDrafts();
-
     // Auto-guardado en tiempo real al escribir en cualquier campo de texto
     document.addEventListener('input', (e) => {
         if (DRAFT_FIELDS.includes(e.target.id)) {
@@ -231,6 +232,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     });
     window.addEventListener('beforeunload', saveFormDrafts);
+
+    // 2. Cargas de red en segundo plano (asíncronas, no bloquean botones ni pestañas)
+    loadSettings().catch(() => {});
+    loadProjectsList().catch(() => {});
+    loadModelsStatus().catch(() => {});
 });
 
 // === PERSISTENCIA DE PESTAÑAS Y BORRADORES (SOBREVIVE A F5) ===
@@ -369,19 +375,30 @@ function switchTab(tabId) {
 function selectFormat(type, durationSec, clickedBtn = null) {
     state.selectedFormat = type;
     state.selectedDuration = durationSec;
-    localStorage.setItem('capa_cero_saved_format', JSON.stringify({ type, durationSec }));
+    try {
+        localStorage.setItem('capa_cero_saved_format', JSON.stringify({ type, durationSec }));
+    } catch (e) {}
 
-    document.querySelectorAll('.format-btn').forEach(btn => {
+    const allButtons = document.querySelectorAll('.format-btn');
+    allButtons.forEach(btn => {
         btn.classList.remove('border-blue-500', 'bg-blue-600/20', 'text-blue-300');
         btn.classList.add('border-gray-700', 'bg-gray-800/80', 'text-gray-200');
     });
 
-    const targetBtn = clickedBtn || 
-        (typeof window !== 'undefined' && window.event && window.event.currentTarget && window.event.currentTarget.classList && window.event.currentTarget.classList.contains('format-btn') ? window.event.currentTarget : null) || 
-        Array.from(document.querySelectorAll('.format-btn')).find(b => {
+    let targetBtn = clickedBtn;
+    if (!targetBtn && typeof window !== 'undefined' && window.event) {
+        const evTarget = window.event.target || window.event.currentTarget;
+        if (evTarget && typeof evTarget.closest === 'function') {
+            targetBtn = evTarget.closest('.format-btn');
+        }
+    }
+    if (!targetBtn) {
+        targetBtn = Array.from(allButtons).find(b => {
             const attr = b.getAttribute('onclick') || '';
-            return attr.includes(`'${type}'`) && attr.includes(`${durationSec}`);
+            return attr.includes(`'${type}'`) && attr.includes(String(durationSec));
         });
+    }
+
     if (targetBtn) {
         targetBtn.classList.remove('border-gray-700', 'bg-gray-800/80', 'text-gray-200');
         targetBtn.classList.add('border-blue-500', 'bg-blue-600/20', 'text-blue-300');

@@ -33,8 +33,8 @@ echo.
 REM Abrir automaticamente el navegador en localhost seguro
 start http://127.0.0.1:8000
 
-REM Arrancar FastAPI / Uvicorn
-python main.py
+REM Arrancar FastAPI / Uvicorn con entorno virtual directo
+.venv\Scripts\python.exe main.py
 
 pause
 
