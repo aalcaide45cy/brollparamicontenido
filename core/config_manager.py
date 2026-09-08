@@ -1,4 +1,4 @@
-﻿import json
+import json
 import os
 from pathlib import Path
 from typing import Dict, Any
@@ -31,7 +31,11 @@ CONFIG_FILE = Path(__file__).resolve().parent.parent / "config.json"
 def load_config() -> Dict[str, Any]:
     """Carga la configuracion desde config.json o crea la predeterminada."""
     if not CONFIG_FILE.exists():
-        save_config(DEFAULT_CONFIG)
+        try:
+            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+                json.dump(DEFAULT_CONFIG, f, indent=4, ensure_ascii=False)
+        except Exception:
+            pass
         return DEFAULT_CONFIG.copy()
     try:
         with open(CONFIG_FILE, "r", encoding="utf-8") as f:
@@ -47,7 +51,15 @@ def load_config() -> Dict[str, Any]:
 
 def save_config(new_config: Dict[str, Any]) -> Dict[str, Any]:
     """Guarda la configuracion actualizada en config.json."""
-    config = load_config()
+    if CONFIG_FILE.exists():
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                config = json.load(f)
+        except Exception:
+            config = DEFAULT_CONFIG.copy()
+    else:
+        config = DEFAULT_CONFIG.copy()
+
     config.update(new_config)
     
     download_dir = Path(config.get("download_path", ""))
@@ -60,3 +72,4 @@ def save_config(new_config: Dict[str, Any]) -> Dict[str, Any]:
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(config, f, indent=4, ensure_ascii=False)
     return config
+
