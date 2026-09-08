@@ -1093,7 +1093,7 @@ async function downloadModel(modelId) {
             const err = await resp.json().catch(() => ({}));
             throw new Error(err.detail || `Error HTTP ${resp.status}`);
         }
-        showToast('Modelo añadido a la cola de descarga ultrarrápida (8 hilos).', 'info');
+        showToast('Modelo añadido a la cola de descarga directa con reanudación automática.', 'info');
         loadModelsStatus();
     } catch (e) {
         showToast(`Error al iniciar descarga: ${e.message}`, 'error');

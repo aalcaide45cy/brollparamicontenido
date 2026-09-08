@@ -227,28 +227,13 @@ def purge_category(category: str) -> int:
     return count
 
 
-def _download_part(cdn_url: str, start: int, end: int, temp_path: Path, progress_callback, cancel_event: threading.Event):
-    """Descarga un rango específico de bytes en paralelo directamente desde la CDN de Hugging Face."""
-    headers = {"Range": f"bytes={start}-{end}"}
-    with httpx.Client(timeout=120.0, follow_redirects=True) as client:
-        with client.stream("GET", cdn_url, headers=headers) as resp:
-            if resp.status_code not in (200, 206):
-                cancel_event.set()
-                raise RuntimeError(f"HTTP {resp.status_code} al descargar rango {start}-{end}")
-            pos = start
-            with open(temp_path, "r+b") as f:
-                for chunk in resp.iter_bytes(chunk_size=1024 * 1024 * 2):  # Buffers de 2 MB
-                    if cancel_event.is_set():
-                        raise RuntimeError("Descarga cancelada por el usuario")
-                    if chunk:
-                        f.seek(pos)
-                        f.write(chunk)
-                        pos += len(chunk)
-                        progress_callback(len(chunk))
-
-
-def _fast_download_worker(model_id: str, url: str, target_path: Path):
-    """Worker de descarga ultrarrápida multihilo con estimación de velocidad y ETA."""
+def _download_worker(model_id: str, url: str, target_path: Path):
+    """Worker de descarga secuencial ultraconfiable con reanudación automática (Resume) y reintentos.
+    
+    Evita la contención de múltiples hilos y la penalización de ancho de banda (tail latency)
+    de Cloudflare / Hugging Face en rangos concurrentes, garantizando velocidad máxima sostenida
+    y tolerancia a caídas de red sin perder los gigabytes ya descargados.
+    """
     target_path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = target_path.with_suffix(".downloading")
     cancel_event = threading.Event()
@@ -256,102 +241,117 @@ def _fast_download_worker(model_id: str, url: str, target_path: Path):
         CANCEL_EVENTS[model_id] = cancel_event
 
     try:
-        with QUEUE_LOCK:
-            DOWNLOAD_TASKS[model_id] = {
-                "status": "downloading",
-                "percent": 0,
-                "downloaded": 0,
-                "total": 0,
-                "speed_mb": "Iniciando...",
-                "eta": "Calculando..."
-            }
-
-        # 1. Resolver redirección directa a la CDN
+        # 1. Obtener cabecera HEAD para saber tamaño total y URL directa
         with httpx.Client(timeout=30.0, follow_redirects=True) as client:
             head_resp = client.head(url)
-            cdn_url = str(head_resp.url)
             total = int(head_resp.headers.get("content-length", 0))
-            accept_ranges = head_resp.headers.get("accept-ranges") == "bytes"
-
-        if cancel_event.is_set():
-            raise RuntimeError("Descarga cancelada por el usuario")
 
         if total <= 0:
             raise RuntimeError("No se pudo determinar el tamaño del archivo en Hugging Face")
 
-        # 2. Pre-asignar archivo temporal
-        with open(temp_path, "wb") as f:
-            f.seek(total - 1)
-            f.write(b"\0")
-
-        # Métricas de velocidad
-        downloaded_bytes = 0
-        lock = threading.Lock()
-        start_time = time.time()
-        last_time = start_time
-        last_bytes = 0
-        speed_str = "0.0 MB/s"
-        eta_str = "Calculando..."
-
-        def on_chunk(chunk_len):
-            nonlocal downloaded_bytes, last_time, last_bytes, speed_str, eta_str
-            if cancel_event.is_set():
-                return
-            with lock:
-                downloaded_bytes += chunk_len
-                now = time.time()
-                dt = now - last_time
-                if dt >= 1.0:
-                    speed_bps = (downloaded_bytes - last_bytes) / dt
-                    last_bytes = downloaded_bytes
-                    last_time = now
-                    speed_mb = speed_bps / (1024 * 1024)
-                    speed_str = f"{speed_mb:.1f} MB/s"
-                    remaining = total - downloaded_bytes
-                    if speed_bps > 0:
-                        rem_sec = int(remaining / speed_bps)
-                        eta_str = f"{rem_sec // 60}m {rem_sec % 60}s" if rem_sec >= 60 else f"{rem_sec}s"
-
-                pct = int((downloaded_bytes / total) * 100) if total > 0 else 0
-                if not cancel_event.is_set():
-                    DOWNLOAD_TASKS[model_id] = {
-                        "status": "downloading",
-                        "percent": min(pct, 99),
-                        "downloaded": downloaded_bytes,
-                        "total": total,
-                        "speed_mb": speed_str,
-                        "eta": eta_str
-                    }
-
-        # 3. Descarga simultánea en 8 hilos si soporta Range, o 1 hilo si no
-        num_workers = 8 if accept_ranges else 1
-        part_size = total // num_workers
-        ranges = []
-        for i in range(num_workers):
-            r_start = i * part_size
-            r_end = (i + 1) * part_size - 1 if i < num_workers - 1 else total - 1
-            ranges.append((r_start, r_end))
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
-            futures = [
-                executor.submit(_download_part, cdn_url, r[0], r[1], temp_path, on_chunk, cancel_event)
-                for r in ranges
-            ]
-            try:
-                for f in concurrent.futures.as_completed(futures):
-                    if cancel_event.is_set():
-                        executor.shutdown(wait=False, cancel_futures=True)
-                        raise RuntimeError("Descarga cancelada por el usuario")
-                    f.result()
-            except Exception:
-                cancel_event.set()
-                executor.shutdown(wait=False, cancel_futures=True)
-                raise
-
         if cancel_event.is_set():
             raise RuntimeError("Descarga cancelada por el usuario")
 
-        # 4. Renombrar al archivo final al completar
+        # 2. Comprobar si existe un archivo parcial previo para reanudar (Resume)
+        downloaded_bytes = 0
+        if temp_path.exists():
+            current_size = temp_path.stat().st_size
+            if current_size < total:
+                downloaded_bytes = current_size
+            elif current_size == total:
+                # Ya está completo en el archivo temporal
+                if target_path.exists():
+                    target_path.unlink()
+                temp_path.rename(target_path)
+                with QUEUE_LOCK:
+                    DOWNLOAD_TASKS[model_id] = {
+                        "status": "completed",
+                        "percent": 100,
+                        "downloaded": total,
+                        "total": total,
+                        "speed_mb": "Completado",
+                        "eta": "0s"
+                    }
+                return
+            else:
+                # Tamaño anómalo (mayor al total), reiniciar
+                try:
+                    temp_path.unlink()
+                except Exception:
+                    pass
+                downloaded_bytes = 0
+
+        # Métricas de velocidad
+        start_time = time.time()
+        last_time = start_time
+        last_bytes = downloaded_bytes
+        speed_str = "Conectando..."
+        eta_str = "Calculando..."
+
+        max_retries = 5
+        retry_count = 0
+
+        while downloaded_bytes < total:
+            if cancel_event.is_set():
+                raise RuntimeError("Descarga cancelada por el usuario")
+
+            headers = {}
+            mode = "wb"
+            if downloaded_bytes > 0:
+                headers["Range"] = f"bytes={downloaded_bytes}-"
+                mode = "ab"
+
+            try:
+                # Timeout generoso de lectura para conexiones lentas o paquetes grandes
+                with httpx.Client(timeout=httpx.Timeout(connect=20.0, read=60.0, write=20.0, pool=30.0), follow_redirects=True) as client:
+                    with client.stream("GET", url, headers=headers) as resp:
+                        if resp.status_code not in (200, 206):
+                            raise RuntimeError(f"HTTP {resp.status_code} al descargar de Hugging Face")
+
+                        with open(temp_path, mode) as f:
+                            for chunk in resp.iter_bytes(chunk_size=1024 * 1024 * 2):  # Buffers continuos de 2 MB
+                                if cancel_event.is_set():
+                                    raise RuntimeError("Descarga cancelada por el usuario")
+                                if chunk:
+                                    f.write(chunk)
+                                    downloaded_bytes += len(chunk)
+                                    now = time.time()
+                                    dt = now - last_time
+                                    if dt >= 1.0:
+                                        speed_bps = (downloaded_bytes - last_bytes) / dt
+                                        last_bytes = downloaded_bytes
+                                        last_time = now
+                                        speed_mb = speed_bps / (1024 * 1024)
+                                        speed_str = f"{speed_mb:.1f} MB/s"
+                                        remaining = total - downloaded_bytes
+                                        if speed_bps > 0:
+                                            rem_sec = int(remaining / speed_bps)
+                                            eta_str = f"{rem_sec // 60}m {rem_sec % 60}s" if rem_sec >= 60 else f"{rem_sec}s"
+
+                                    pct = int((downloaded_bytes / total) * 100) if total > 0 else 0
+                                    with QUEUE_LOCK:
+                                        DOWNLOAD_TASKS[model_id] = {
+                                            "status": "downloading",
+                                            "percent": min(pct, 99),
+                                            "downloaded": downloaded_bytes,
+                                            "total": total,
+                                            "speed_mb": speed_str,
+                                            "eta": eta_str
+                                        }
+                # Si completó el stream con éxito
+                retry_count = 0
+            except Exception as e:
+                if cancel_event.is_set():
+                    raise
+                retry_count += 1
+                if retry_count > max_retries:
+                    raise RuntimeError(f"Fallo persistente tras {max_retries} reintentos: {e}")
+                # En caso de corte momentáneo de red, se mantiene el archivo y se reanuda desde el tamaño real
+                if temp_path.exists():
+                    downloaded_bytes = temp_path.stat().st_size
+                time.sleep(2)
+
+        # 3. Al completar 100%, renombrar al archivo final
         if temp_path.exists():
             if target_path.exists():
                 target_path.unlink()
@@ -365,6 +365,7 @@ def _fast_download_worker(model_id: str, url: str, target_path: Path):
                     "speed_mb": "Completado",
                     "eta": "0s"
                 }
+
     except Exception as e:
         was_cancelled = cancel_event.is_set() or "cancelada" in str(e).lower()
         with QUEUE_LOCK:
@@ -372,7 +373,8 @@ def _fast_download_worker(model_id: str, url: str, target_path: Path):
                 DOWNLOAD_TASKS.pop(model_id, None)
             else:
                 DOWNLOAD_TASKS[model_id] = {"status": "error", "error": str(e), "percent": 0}
-        if temp_path.exists():
+        # Solo se borra el archivo si el usuario canceló explícitamente
+        if was_cancelled and temp_path.exists():
             try:
                 temp_path.unlink()
             except Exception:
@@ -399,7 +401,7 @@ def _process_next_in_queue():
         base_dir = get_models_dir()
         target = base_dir / model_info["category"] / model_info["filename"]
         thread = threading.Thread(
-            target=_fast_download_worker,
+            target=_download_worker,
             args=(next_model_id, model_info["url"], target),
             daemon=True
         )
