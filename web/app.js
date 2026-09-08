@@ -94,6 +94,8 @@ function selectHistoryTopic(topic) {
     const broll = document.getElementById('broll-search-input');
     if (broll) broll.value = topic;
 
+    saveFormDrafts();
+
     const menu = document.getElementById('topic-history-menu');
     if (menu) menu.classList.add('hidden');
     showToast('Tema recuperado del historial.', 'info');
@@ -214,7 +216,130 @@ document.addEventListener('DOMContentLoaded', async () => {
     await loadSettings();
     await loadProjectsList();
     await loadModelsStatus();
+
+    // Restaurar pestaña activa anterior (sobrevive a F5)
+    const savedTab = localStorage.getItem('capa_cero_active_tab') || 'tab-script';
+    switchTab(savedTab);
+
+    // Restaurar borradores de texto de formularios (sobrevive a F5)
+    restoreFormDrafts();
+
+    // Auto-guardado en tiempo real al escribir en cualquier campo de texto
+    document.addEventListener('input', (e) => {
+        if (DRAFT_FIELDS.includes(e.target.id)) {
+            saveFormDrafts();
+        }
+    });
+    window.addEventListener('beforeunload', saveFormDrafts);
 });
+
+// === PERSISTENCIA DE PESTAÑAS Y BORRADORES (SOBREVIVE A F5) ===
+const DRAFT_FIELDS = [
+    'script-topic',
+    'script-context',
+    'script-result',
+    'broll-search-input',
+    'viral-topic-input',
+    'seo-result'
+];
+
+function saveFormDrafts() {
+    const drafts = {};
+    DRAFT_FIELDS.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) {
+            const val = el.value || '';
+            // Ignorar credenciales accidentales de usuario
+            if (id === 'script-context' && val.toLowerCase().includes('aalcaide')) return;
+            drafts[id] = val;
+        }
+    });
+
+    // Guardar también títulos y miniaturas generadas si existen
+    const titlesEl = document.getElementById('titles-container');
+    if (titlesEl && !titlesEl.innerHTML.includes('Haz clic en &quot;Títulos Alto CTR&quot;')) {
+        drafts['viral_titles_html'] = titlesEl.innerHTML;
+    }
+    const thumbsEl = document.getElementById('thumbnails-container');
+    if (thumbsEl && !thumbsEl.innerHTML.includes('Genera conceptos de miniatura')) {
+        drafts['viral_thumbs_html'] = thumbsEl.innerHTML;
+    }
+
+    localStorage.setItem('capa_cero_form_drafts', JSON.stringify(drafts));
+}
+
+function restoreFormDrafts() {
+    try {
+        const raw = localStorage.getItem('capa_cero_form_drafts');
+        if (!raw) return;
+        const drafts = JSON.parse(raw);
+
+        DRAFT_FIELDS.forEach(id => {
+            const el = document.getElementById(id);
+            if (el && drafts[id] !== undefined && drafts[id] !== '') {
+                if (id === 'script-context' && drafts[id].toLowerCase().includes('aalcaide')) return;
+                el.value = drafts[id];
+            }
+        });
+
+        // Si se recuperó el guion, recalcular palabras y restaurar tags de B-roll
+        const scriptRes = document.getElementById('script-result');
+        if (scriptRes && scriptRes.value.trim()) {
+            state.currentScriptText = scriptRes.value;
+            updateScriptStatsAndTags(scriptRes.value);
+        }
+
+        // Restaurar títulos generados si los había
+        if (drafts['viral_titles_html']) {
+            const titlesEl = document.getElementById('titles-container');
+            if (titlesEl) titlesEl.innerHTML = drafts['viral_titles_html'];
+        }
+
+        // Restaurar miniaturas generadas si las había
+        if (drafts['viral_thumbs_html']) {
+            const thumbsEl = document.getElementById('thumbnails-container');
+            if (thumbsEl) thumbsEl.innerHTML = drafts['viral_thumbs_html'];
+        }
+
+        // Restaurar formato seleccionado
+        const rawFormat = localStorage.getItem('capa_cero_saved_format');
+        if (rawFormat) {
+            const fmt = JSON.parse(rawFormat);
+            if (fmt && fmt.type && fmt.durationSec) {
+                selectFormat(fmt.type, fmt.durationSec);
+            }
+        }
+    } catch (e) {
+        console.warn('Error al restaurar borradores:', e);
+    }
+}
+
+function updateScriptStatsAndTags(text) {
+    if (!text) return;
+    const words = text.trim().split(/\s+/).filter(w => w.length > 0).length;
+    const duration = Math.round((words / 140) * 60);
+    const statsEl = document.getElementById('script-stats');
+    if (statsEl) statsEl.innerText = `${words} palabras (~${duration} seg)`;
+
+    // Extraer marcadores [B-ROLL: ...]
+    const matches = text.match(/\[B-ROLL:\s*([^\]]+)\]/gi) || [];
+    const brollContainer = document.getElementById('broll-tags-container');
+    if (brollContainer && matches.length > 0) {
+        brollContainer.innerHTML = '';
+        const tags = Array.from(new Set(matches.map(m => m.replace(/\[B-ROLL:\s*/i, '').replace(/\]$/, '').trim()))).slice(0, 10);
+        tags.forEach(tag => {
+            const badge = document.createElement('button');
+            badge.className = 'px-2.5 py-1 rounded-lg bg-blue-950/60 hover:bg-blue-900 border border-blue-800/60 text-blue-300 text-xs font-medium transition-all flex items-center gap-1.5';
+            badge.innerHTML = `<i class="fa-solid fa-magnifying-glass text-[10px]"></i> ${tag}`;
+            badge.onclick = () => {
+                document.getElementById('broll-search-input').value = tag;
+                switchTab('tab-broll');
+                searchBroll();
+            };
+            brollContainer.appendChild(badge);
+        });
+    }
+}
 
 // === GESTIÓN DE PESTAÑAS ===
 function switchTab(tabId) {
@@ -234,23 +359,33 @@ function switchTab(tabId) {
     }
 
     state.activeTab = tabId;
+    localStorage.setItem('capa_cero_active_tab', tabId);
 
     if (tabId === 'tab-projects') loadProjectsList();
     if (tabId === 'tab-models') loadModelsStatus();
 }
 
 // === SELECTOR DE FORMATO ===
-function selectFormat(type, durationSec) {
+function selectFormat(type, durationSec, clickedBtn = null) {
     state.selectedFormat = type;
     state.selectedDuration = durationSec;
+    localStorage.setItem('capa_cero_saved_format', JSON.stringify({ type, durationSec }));
 
     document.querySelectorAll('.format-btn').forEach(btn => {
         btn.classList.remove('border-blue-500', 'bg-blue-600/20', 'text-blue-300');
         btn.classList.add('border-gray-700', 'bg-gray-800/80', 'text-gray-200');
     });
 
-    event.currentTarget.classList.remove('border-gray-700', 'bg-gray-800/80', 'text-gray-200');
-    event.currentTarget.classList.add('border-blue-500', 'bg-blue-600/20', 'text-blue-300');
+    const targetBtn = clickedBtn || 
+        (typeof window !== 'undefined' && window.event && window.event.currentTarget && window.event.currentTarget.classList && window.event.currentTarget.classList.contains('format-btn') ? window.event.currentTarget : null) || 
+        Array.from(document.querySelectorAll('.format-btn')).find(b => {
+            const attr = b.getAttribute('onclick') || '';
+            return attr.includes(`'${type}'`) && attr.includes(`${durationSec}`);
+        });
+    if (targetBtn) {
+        targetBtn.classList.remove('border-gray-700', 'bg-gray-800/80', 'text-gray-200');
+        targetBtn.classList.add('border-blue-500', 'bg-blue-600/20', 'text-blue-300');
+    }
 }
 
 // === GENERACIÓN DE GUION ===
@@ -315,6 +450,7 @@ async function generateScript() {
             });
         }
 
+        saveFormDrafts();
         showToast('¡Guion generado y contrastado con éxito!', 'success');
     } catch (e) {
         showToast(e.message, 'error');
@@ -535,6 +671,7 @@ async function generateViralTitles() {
         });
         const data = await resp.json();
         container.innerHTML = `<pre class="whitespace-pre-wrap leading-relaxed text-xs text-gray-200">${data.raw_titles}</pre>`;
+        saveFormDrafts();
     } catch (e) {
         container.innerHTML = `<div class="text-rose-400 p-3">Error: ${e.message}</div>`;
     }
@@ -558,6 +695,7 @@ async function generateViralThumbnails() {
         });
         const data = await resp.json();
         container.innerHTML = `<pre class="whitespace-pre-wrap leading-relaxed text-xs text-gray-200">${data.thumbnail_proposals}</pre>`;
+        saveFormDrafts();
     } catch (e) {
         container.innerHTML = `<div class="text-rose-400 p-3">Error: ${e.message}</div>`;
     }
@@ -584,6 +722,7 @@ async function generateViralSeo() {
         });
         const data = await resp.json();
         seoArea.value = data.seo_package;
+        saveFormDrafts();
         showToast('¡Paquete SEO armado correctamente!', 'success');
     } catch (e) {
         seoArea.value = `Error: ${e.message}`;
