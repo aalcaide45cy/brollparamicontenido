@@ -484,26 +484,42 @@ async function searchBroll() {
         return;
     }
 
+    const scriptTopic = document.getElementById('script-topic')?.value?.trim() || '';
+    const scriptContext = document.getElementById('script-context')?.value?.trim() || '';
+    const combinedContext = [scriptTopic, scriptContext].filter(Boolean).join(' | ');
+
+    const banner = document.getElementById('broll-context-banner');
+    const bannerText = document.getElementById('broll-context-text');
+    const resultsCount = document.getElementById('broll-results-count');
+
     const gallery = document.getElementById('broll-gallery');
     gallery.innerHTML = `
         <div class="col-span-full py-16 text-center text-blue-400 space-y-3">
             <div class="w-10 h-10 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto"></div>
-            <p class="text-sm font-medium">Buscando masivamente en español e inglés en Pexels y Pixabay...</p>
+            <p class="text-sm font-medium">Analizando contexto maker y buscando clips precisos en Pexels y Pixabay...</p>
         </div>
     `;
 
     try {
-        // Buscar masivamente (hasta 80 clips en español e inglés combinados)
         const resp = await fetch('/api/broll/search', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ query: query, limit: 80 })
+            body: JSON.stringify({ query: query, limit: 80, context: combinedContext })
         });
 
         const data = await resp.json();
         state.searchResults = data.results || [];
+
+        if (banner && bannerText && data.context_summary) {
+            bannerText.innerText = data.context_summary;
+            if (resultsCount) {
+                resultsCount.innerText = `${state.searchResults.length} clips relevantes`;
+            }
+            banner.classList.remove('hidden');
+        }
+
         renderBrollGallery(state.searchResults);
-        showToast(`Se han encontrado ${state.searchResults.length} clips para tu contenido.`, 'info');
+        showToast(`Se han encontrado ${state.searchResults.length} clips relevantes para tu contenido.`, 'info');
     } catch (e) {
         gallery.innerHTML = `<div class="col-span-full py-10 text-center text-rose-400">Error buscando B-Roll: ${e.message}</div>`;
     }
@@ -531,7 +547,7 @@ function renderBrollGallery(clips) {
 
         card.innerHTML = `
             <div class="relative aspect-video bg-black overflow-hidden group">
-                <img src="${clip.thumbnail}" alt="${clip.title}" class="w-full h-full object-cover transition-opacity duration-300 group-hover:opacity-0">
+                <img src="${clip.thumbnail || ''}" alt="" class="w-full h-full object-cover transition-opacity duration-300 group-hover:opacity-0" loading="lazy" onerror="this.style.opacity='0';">
                 <video src="${clip.preview_url}" loop muted playsinline preload="none" class="absolute inset-0 w-full h-full object-cover opacity-0 group-hover:opacity-100 transition-opacity duration-300"></video>
                 
                 <div class="absolute top-2 left-2 flex gap-1 z-10 pointer-events-none">

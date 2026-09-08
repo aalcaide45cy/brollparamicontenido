@@ -71,7 +71,8 @@ class SeoRequest(BaseModel):
 
 class BrollSearchRequest(BaseModel):
     query: str
-    limit: int = 20
+    limit: int = 80
+    context: Optional[str] = ""
 
 
 class BrollDownloadRequest(BaseModel):
@@ -199,8 +200,13 @@ async def generate_seo_endpoint(req: SeoRequest):
 @app.post("/api/broll/search")
 async def search_broll_endpoint(req: BrollSearchRequest):
     try:
-        results = await search_all_broll(query=req.query, limit=req.limit)
-        return {"query": req.query, "results": results}
+        data = await search_all_broll(query=req.query, limit=req.limit, context=req.context or "")
+        return {
+            "query": req.query,
+            "results": data.get("results", []) if isinstance(data, dict) else data,
+            "context_summary": data.get("context_summary", "") if isinstance(data, dict) else "",
+            "queries": data.get("queries", []) if isinstance(data, dict) else [req.query],
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -243,7 +249,8 @@ async def auto_download_best_broll(req: AutoBrollRequest):
     dest_dir = Path(req.project_path) / "BRoll_Videos"
     dest_dir.mkdir(parents=True, exist_ok=True)
 
-    results = await search_all_broll(query=req.query, limit=req.count + 5)
+    data = await search_all_broll(query=req.query, limit=req.count + 5)
+    results = data.get("results", []) if isinstance(data, dict) else data
     best_clips = results[:req.count]
 
     downloaded = []

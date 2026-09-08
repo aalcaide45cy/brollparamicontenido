@@ -1,5 +1,6 @@
 import re
 import os
+import asyncio
 import httpx
 from pathlib import Path
 from typing import List, Dict, Any, Optional
@@ -15,7 +16,7 @@ def clean_filename(name: str) -> str:
     return cleaned.strip().replace(" ", "_")[:60]
 
 
-async def search_broll_pexels(query: str, api_key: str, per_page: int = 15) -> List[Dict[str, Any]]:
+async def search_broll_pexels(query: str, api_key: str, per_page: int = 15, client: Optional[httpx.AsyncClient] = None) -> List[Dict[str, Any]]:
     if not api_key:
         return []
     
@@ -29,40 +30,41 @@ async def search_broll_pexels(query: str, api_key: str, per_page: int = 15) -> L
     
     results = []
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        if client:
             resp = await client.get(PEXELS_VIDEOS_URL, headers=headers, params=params)
-            if resp.status_code == 200:
-                data = resp.json()
-                for v in data.get("videos", []):
-                    # Buscar el video file de mayor calidad
-                    video_files = v.get("video_files", [])
-                    if not video_files:
-                        continue
-                    
-                    # Ordenar por ancho descendente
-                    video_files.sort(key=lambda x: x.get("width", 0), reverse=True)
-                    best_file = video_files[0]
-                    # Buscar preview más ligero para hover
-                    preview_file = next((f for f in reversed(video_files) if f.get("width", 0) >= 480), best_file)
+        else:
+            async with httpx.AsyncClient(timeout=10.0) as c:
+                resp = await c.get(PEXELS_VIDEOS_URL, headers=headers, params=params)
 
-                    results.append({
-                        "id": f"pexels_{v.get('id')}",
-                        "source": "Pexels",
-                        "title": f"Clip {v.get('id')} - {query}",
-                        "thumbnail": v.get("image", ""),
-                        "preview_url": preview_file.get("link", ""),
-                        "download_url": best_file.get("link", ""),
-                        "duration": v.get("duration", 0),
-                        "width": best_file.get("width", 1920),
-                        "height": best_file.get("height", 1080),
-                        "quality": f"{best_file.get('width')}x{best_file.get('height')}",
-                    })
+        if resp.status_code == 200:
+            data = resp.json()
+            for v in data.get("videos", []):
+                video_files = v.get("video_files", [])
+                if not video_files:
+                    continue
+                
+                video_files.sort(key=lambda x: x.get("width", 0), reverse=True)
+                best_file = video_files[0]
+                preview_file = next((f for f in reversed(video_files) if f.get("width", 0) >= 480), best_file)
+
+                results.append({
+                    "id": f"pexels_{v.get('id')}",
+                    "source": "Pexels",
+                    "title": f"Clip {v.get('id')} - {query}",
+                    "thumbnail": v.get("image", ""),
+                    "preview_url": preview_file.get("link", ""),
+                    "download_url": best_file.get("link", ""),
+                    "duration": v.get("duration", 0),
+                    "width": best_file.get("width", 1920),
+                    "height": best_file.get("height", 1080),
+                    "quality": f"{best_file.get('width')}x{best_file.get('height')}",
+                })
     except Exception as e:
-        print(f"Error buscando en Pexels: {e}")
+        print(f"Error buscando en Pexels ({query}): {e}")
     return results
 
 
-async def search_broll_pixabay(query: str, api_key: str, per_page: int = 15) -> List[Dict[str, Any]]:
+async def search_broll_pixabay(query: str, api_key: str, per_page: int = 20, client: Optional[httpx.AsyncClient] = None) -> List[Dict[str, Any]]:
     if not api_key:
         return []
     
@@ -75,160 +77,249 @@ async def search_broll_pixabay(query: str, api_key: str, per_page: int = 15) -> 
     
     results = []
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        if client:
             resp = await client.get(PIXABAY_VIDEOS_URL, params=params)
-            if resp.status_code == 200:
-                data = resp.json()
-                for hit in data.get("hits", []):
-                    videos = hit.get("videos", {})
-                    # Preferir large o medium
-                    best = videos.get("large") or videos.get("medium") or videos.get("small")
-                    preview = videos.get("tiny") or videos.get("small") or best
-                    
-                    if not best:
-                        continue
+        else:
+            async with httpx.AsyncClient(timeout=10.0) as c:
+                resp = await c.get(PIXABAY_VIDEOS_URL, params=params)
 
-                    results.append({
-                        "id": f"pixabay_{hit.get('id')}",
-                        "source": "Pixabay",
-                        "title": hit.get("tags", f"Clip {hit.get('id')}"),
-                        "thumbnail": f"https://i.vimeocdn.com/video/{hit.get('picture_id')}_640x360.jpg",
-                        "preview_url": preview.get("url", ""),
-                        "download_url": best.get("url", ""),
-                        "duration": hit.get("duration", 0),
-                        "width": best.get("width", 1920),
-                        "height": best.get("height", 1080),
-                        "quality": f"{best.get('width')}x{best.get('height')}",
-                    })
+        if resp.status_code == 200:
+            data = resp.json()
+            for hit in data.get("hits", []):
+                videos = hit.get("videos", {})
+                best = videos.get("large") or videos.get("medium") or videos.get("small")
+                preview = videos.get("tiny") or videos.get("small") or best
+                
+                if not best:
+                    continue
+
+                thumb_url = (
+                    videos.get("medium", {}).get("thumbnail")
+                    or videos.get("large", {}).get("thumbnail")
+                    or videos.get("small", {}).get("thumbnail")
+                    or videos.get("tiny", {}).get("thumbnail")
+                    or hit.get("userImageURL", "")
+                )
+
+                results.append({
+                    "id": f"pixabay_{hit.get('id')}",
+                    "source": "Pixabay",
+                    "title": hit.get("tags", f"Clip {hit.get('id')}"),
+                    "thumbnail": thumb_url,
+                    "preview_url": preview.get("url", ""),
+                    "download_url": best.get("url", ""),
+                    "duration": hit.get("duration", 0),
+                    "width": best.get("width", 1920),
+                    "height": best.get("height", 1080),
+                    "quality": f"{best.get('width')}x{best.get('height')}",
+                })
     except Exception as e:
-        print(f"Error buscando en Pixabay: {e}")
+        print(f"Error buscando en Pixabay ({query}): {e}")
     return results
 
 
-# Stop words en espanol para no enviar conectores vacios a APIs en ingles
-SPANISH_STOP_WORDS = {
-    "de", "del", "la", "el", "en", "un", "una", "los", "las", "para",
-    "con", "por", "al", "sobre", "y", "o", "un", "su", "sus", "como"
+# Palabras de descarte absoluto (ruido de bancos de stock que no tienen nada que ver con impresión 3D)
+JUNK_STOCK_TAGS = {
+    "earth", "planet", "wormhole", "space", "galaxy", "universe", "stars",
+    "bitcoin", "crypto", "blockchain", "money", "currency", "finance", "pay", "payment",
+    "beach", "sand", "sea", "ocean", "mediterranean", "dune", "mountain", "mountains", 
+    "clouds", "sky", "sunset", "sunrise",
+    "church", "cathedral", "monument", "castle", "tourism", "cityscape", "ferris wheel",
+    "biology", "genetics", "dna", "virus", "medical", "cell", "bacteria", "ribonucleic",
+    "letters", "alphabet", "typography", "count", "shopping",
+    "light bulb", "bulb", "lamp", "candle", "incandescent",
+    "bird", "birds", "butterfly", "insect", "wildlife", "lake",
+    "abstract", "wallpaper", "particles", "atom", "molecule"
 }
 
-# Mapeo semantico de conceptos tecnicos maker a terminos de busqueda optimos para Pexels y Pixabay
-CONCEPT_SEARCH_MAP = {
-    "purga de filamento": ["3d printer filament", "3d printer nozzle", "3d printing"],
-    "purga": ["3d printer filament", "3d printer nozzle", "3d printing"],
-    "filamento": ["3d printer filament", "3d printing filament", "3d printer"],
-    "impresora 3d": ["3d printer", "3d printing timelapse"],
-    "impresion 3d": ["3d printing", "3d printer close up"],
-    "imprimiendo": ["3d printing timelapse", "3d printer"],
-    "boquilla": ["3d printer nozzle", "3d printer extruder"],
-    "boquillas": ["3d printer nozzle", "3d printer extruder"],
-    "cama caliente": ["3d printer bed", "3d printing surface"],
-    "placa pei": ["3d printer bed", "3d printing"],
-    "soporte": ["3d printer supports", "3d printing"],
-    "soportes": ["3d printer supports", "3d printing"],
-    "soportes en arbol": ["tree supports 3d printing", "3d printer"],
-    "extrusor": ["3d printer extruder", "direct drive extruder"],
-    "atasco": ["3d printer nozzle", "3d printer extruder"],
-    "resina": ["resin 3d printer", "sla 3d printing"],
-    "calibracion": ["3d printer bed leveling", "3d printer calibration"],
-    "timelapse": ["3d printer timelapse", "3d printing timelapse"],
-    "taller": ["maker lab 3d printer", "maker workshop"],
-    "robotica": ["robotics engineering", "robot arm technology"],
-    "tecnologia": ["modern technology", "engineering lab"],
-}
+# Diccionario semántico contextual especializado para canal de YouTube de Impresión 3D y Makers
+MAKER_CONTEXT_MAP = [
+    {
+        "keys": ["torre de purga", "torres de purga", "purga de filamento", "purga", "purge tower", "wipe tower", "poop"],
+        "queries": ["3d printer nozzle", "3d printing timelapse", "3d printer extruder", "3d printing"],
+        "summary": "Contexto: Purga de boquilla y torre de purga -> Buscando clips de boquillas, extrusores y timelapses de capas FDM."
+    },
+    {
+        "keys": ["bambu lab", "ams", "multicolor", "multi color", "cambio de color", "cambio de filamento"],
+        "queries": ["3d printer multi color", "3d printing timelapse", "3d printer filament", "3d printing"],
+        "summary": "Contexto: Impresión multicolor y AMS -> Buscando clips de cambio de filamento y timelapses a color."
+    },
+    {
+        "keys": ["soporte", "soportes", "soportes en arbol", "tree support", "tree supports"],
+        "queries": ["3d printer supports", "3d printing timelapse", "3d printer"],
+        "summary": "Contexto: Estructuras de soporte -> Buscando clips de soportes y timelapses de impresión 3D."
+    },
+    {
+        "keys": ["cama caliente", "placa pei", "cama", "adhesion", "heatbed", "pei"],
+        "queries": ["3d printer bed", "3d printing surface", "3d printer leveling", "3d printer"],
+        "summary": "Contexto: Cama de impresión y adhesión PEI -> Buscando clips de superficie de impresión y calibración."
+    },
+    {
+        "keys": ["boquilla", "boquillas", "nozzle", "hotend", "atasco", "clog"],
+        "queries": ["3d printer nozzle", "3d printer extruder", "3d printing close up"],
+        "summary": "Contexto: Boquilla y Hotend -> Buscando macros de boquilla y cabezal de extrusión depositando plástico."
+    },
+    {
+        "keys": ["hilos", "stringing", "retraccion", "retraction"],
+        "queries": ["3d printer nozzle", "3d printer extruder", "3d printing"],
+        "summary": "Contexto: Hilos y retracción -> Buscando planos cerrados de boquilla y movimientos de cabezal."
+    },
+    {
+        "keys": ["filamento", "bobina", "spool", "pla", "petg", "tpu", "abs", "asa"],
+        "queries": ["3d printing filament", "3d printer spool", "3d printing"],
+        "summary": "Contexto: Filamento y bobinas -> Buscando bobinas de filamento, alimentación de material y extrusión."
+    },
+    {
+        "keys": ["capa", "capas", "layer", "altura de capa", "resolucion"],
+        "queries": ["3d printing layers", "3d printer close up", "3d printing timelapse"],
+        "summary": "Contexto: Líneas de capa y resolución -> Buscando macros de capas depositándose y timelapses."
+    },
+    {
+        "keys": ["resina", "sla", "msla", "fotopolimero", "uv"],
+        "queries": ["resin 3d printer", "sla 3d printing", "3d printing"],
+        "summary": "Contexto: Impresión en resina SLA -> Buscando tanques de resina líquida y curado UV."
+    },
+    {
+        "keys": ["calibracion", "nivelacion", "leveling", "sensor"],
+        "queries": ["3d printer bed leveling", "3d printer calibration", "3d printer"],
+        "summary": "Contexto: Calibración y nivelación -> Buscando sensores de nivelación y ajuste de cama."
+    },
+    {
+        "keys": ["timelapse", "time-lapse", "camara rapida"],
+        "queries": ["3d printing timelapse", "3d printer timelapse", "3d printing"],
+        "summary": "Contexto: Timelapse de impresión -> Buscando vídeos acelerados del objeto creciendo capa a capa."
+    },
+]
 
 
-def expand_query_multilingual(query: str) -> List[str]:
-    """Expande la consulta en espanol hacia terminos precisos en ingles para Pexels y Pixabay."""
-    q_lower = query.lower().strip()
-    queries: List[str] = []
+def expand_query_contextually(query: str, context: str = "") -> Dict[str, Any]:
+    """Analiza el concepto y el contexto del canal Capa Cero para generar consultas visuales precisas en Pexels y Pixabay."""
+    combined_text = f"{query} {context}".lower().strip()
+    
+    # 1. Buscar coincidencia en la base de conocimiento maker
+    for entry in MAKER_CONTEXT_MAP:
+        for key in entry["keys"]:
+            if key in combined_text:
+                return {
+                    "queries": entry["queries"],
+                    "summary": entry["summary"]
+                }
+                
+    # 2. Si no hay coincidencia directa, limpiar y asegurar anclaje a 3D printing
+    cleaned_words = [w for w in query.lower().split() if w not in {"de", "la", "el", "en", "un", "una", "los", "las", "para", "con", "por", "al", "y", "o"}]
+    clean_query = " ".join(cleaned_words)
+    
+    if "3d" in clean_query or "impres" in clean_query:
+        queries = ["3d printing", "3d printer", "3d printing timelapse"]
+    else:
+        queries = [f"3d printing {clean_query}", "3d printer", "3d printing timelapse"]
+        
+    return {
+        "queries": queries[:3],
+        "summary": f"Contexto Maker general: Buscando clips de '{clean_query}' anclados a maquinaria y timelapses de impresión 3D."
+    }
 
-    # 1. Detectar conceptos maker prioritarios (frases largas primero)
-    for es_term, en_list in sorted(CONCEPT_SEARCH_MAP.items(), key=lambda x: len(x[0]), reverse=True):
-        if es_term in q_lower:
-            for item in en_list:
-                if item not in queries:
-                    queries.append(item)
 
-    # 2. Si no hubo coincidencia directa en el mapa, limpiar conectores en espanol
-    if not queries:
-        words = [w for w in q_lower.split() if w not in SPANISH_STOP_WORDS]
-        cleaned = " ".join(words)
-        if cleaned:
-            queries.append(cleaned)
-            if "3d" not in cleaned:
-                queries.append(f"3d printing {cleaned}")
-
-    # Asegurar un maximo de 3 consultas muy enfocadas
-    return queries[:3]
-
-
-def calculate_clip_relevance(clip: Dict[str, Any], original_query: str) -> int:
-    """Calcula la relevancia del clip para priorizar videos reales de impresion 3D y descartar ruido."""
-    tags = str(clip.get("title", "")).lower()
+def calculate_clip_relevance(clip: Dict[str, Any]) -> int:
+    """Calcula estrictamente la relevancia del clip para garantizar contenido genuino de impresión 3D y descartar ruido."""
+    text = f"{clip.get('title', '')} {clip.get('source', '')}".lower()
+    
+    # 1. Descarte inmediato si contiene términos de ruido
+    for junk in JUNK_STOCK_TAGS:
+        if junk in text:
+            return -999
+            
+    # 2. Puntuación positiva por términos técnicos maker
     score = 0
-
-    # Palabras clave de alta relevancia en impresion 3D
-    if "3d printer" in tags or "3d printing" in tags:
+    if "3d printer" in text or "3d printing" in text or "printer 3d" in text or "printing 3d" in text:
+        score += 100
+    if "3d print" in text:
+        score += 90
+    if "filament" in text or "nozzle" in text or "extruder" in text or "hotend" in text:
+        score += 80
+    if "additive manufacturing" in text or "resin 3d" in text or "sla 3d" in text:
+        score += 80
+    if "maker" in text or "prototyping" in text:
         score += 50
-    if "printer" in tags and "3d" in tags:
+    if "timelapse" in text:
         score += 40
-    if "filament" in tags or "nozzle" in tags or "extruder" in tags:
-        score += 35
-    if "maker" in tags or "engineering" in tags:
-        score += 20
-    if "machine" in tags or "robot" in tags or "technology" in tags:
-        score += 10
-
-    # Ruido tipico devuelto por Pixabay cuando no hay coincidencia exacta
-    bad_tags = ["earth", "planet", "wormhole", "space", "galaxy", "light bulb", "bulb", "lamp", "skull", "skeleton", "candle"]
-    if any(b in tags for b in bad_tags):
-        score -= 80
-
+        
     return score
 
 
-async def search_all_broll(query: str, limit: int = 80) -> List[Dict[str, Any]]:
-    """Busca masivamente clips en todas las plataformas combinando terminos tecnicos precisos."""
+async def search_all_broll(query: str, limit: int = 80, context: str = "") -> Dict[str, Any]:
+    """Busca masivamente clips en todas las plataformas con comprensión contextual y filtrado estricto."""
     config = load_config()
     pexels_key = config.get("pexels_api_key", "").strip()
     pixabay_key = config.get("pixabay_api_key", "").strip()
 
-    # Ignorar posibles contrasenas autocompletadas por el navegador
+    # Ignorar posibles contraseñas autocompletadas por el navegador
     if pexels_key and "Seatleon" in pexels_key:
         pexels_key = ""
 
-    queries = expand_query_multilingual(query)
+    context_data = expand_query_contextually(query, context)
+    queries = context_data["queries"]
+    summary = context_data["summary"]
+
     all_results = []
     seen_ids = set()
 
-    for q in queries:
-        # Busqueda en Pexels (hasta 40 por termino)
+    # Búsqueda concurrente de alta velocidad (todas las consultas en paralelo con cliente compartido)
+    timeout = httpx.Timeout(8.0, connect=4.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        tasks = []
+        # Pexels maneja perfectamente frases descriptivas de 3 palabras
         if pexels_key:
-            p_res = await search_broll_pexels(q, pexels_key, per_page=40)
-            for r in p_res:
-                if r["id"] not in seen_ids:
-                    seen_ids.add(r["id"])
-                    all_results.append(r)
+            for q in queries[:3]:
+                tasks.append(search_broll_pexels(q, pexels_key, per_page=25, client=client))
 
-        # Busqueda en Pixabay (hasta 40 por termino)
+        # Pixabay requiere términos clave cortos (1-2 palabras) para no devolver ruido
         if pixabay_key:
-            px_res = await search_broll_pixabay(q, pixabay_key, per_page=40)
-            for r in px_res:
-                if r["id"] not in seen_ids:
-                    seen_ids.add(r["id"])
-                    all_results.append(r)
+            pix_terms = []
+            for q in queries:
+                short = " ".join(q.split()[:2])
+                if short not in pix_terms:
+                    pix_terms.append(short)
+            if "3d printer" not in pix_terms:
+                pix_terms.append("3d printer")
 
-    # Ordenar por relevancia para que los clips reales de impresion 3D aparezcan primero
-    all_results.sort(key=lambda c: calculate_clip_relevance(c, query), reverse=True)
+            for pq in pix_terms[:2]:
+                tasks.append(search_broll_pixabay(pq, pixabay_key, per_page=20, client=client))
 
-    # Filtrar clips que tengan score fuertemente negativo (ruido espacial/bombillas)
-    filtered = [c for c in all_results if calculate_clip_relevance(c, query) >= 0]
-    if filtered:
-        all_results = filtered
+        if tasks:
+            batch_results = await asyncio.gather(*tasks, return_exceptions=True)
+            for res in batch_results:
+                if isinstance(res, list):
+                    for r in res:
+                        if r["id"] not in seen_ids:
+                            seen_ids.add(r["id"])
+                            all_results.append(r)
 
-    # Fallback demo enriquecido si no hay claves configuradas
-    if not all_results:
-        all_results = [
+    # Filtrar estrictamente: SOLO clips con puntuación estrictamente positiva (> 0)
+    # y descartar clips con score <= 0 o negativos (-999)
+    scored_clips = []
+    for c in all_results:
+        rel = calculate_clip_relevance(c)
+        if rel > 0:
+            c["relevance_score"] = rel
+            scored_clips.append(c)
+
+    # Ordenar por relevancia para que los clips más fidedignos aparezcan primero
+    scored_clips.sort(key=lambda c: c["relevance_score"], reverse=True)
+
+    # Si encontramos clips relevantes tras el filtrado estricto, usarlos
+    if scored_clips:
+        final_clips = scored_clips
+    elif all_results:
+        # Fallback ordenado si los términos eran muy abiertos
+        all_results.sort(key=lambda c: calculate_clip_relevance(c), reverse=True)
+        final_clips = [c for c in all_results if calculate_clip_relevance(c) >= -50]
+    else:
+        final_clips = []
+
+    # Fallback demo enriquecido solo si no hay ninguna clave configurada o falló la red
+    if not final_clips and not pexels_key and not pixabay_key:
+        final_clips = [
             {
                 "id": "demo_1",
                 "source": "Stock Libre (Demo)",
@@ -267,7 +358,11 @@ async def search_all_broll(query: str, limit: int = 80) -> List[Dict[str, Any]]:
             }
         ]
 
-    return all_results[:limit]
+    return {
+        "results": final_clips[:limit],
+        "context_summary": summary,
+        "queries": queries,
+    }
 
 
 
