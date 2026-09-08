@@ -1,4 +1,4 @@
-﻿import re
+import re
 import os
 import httpx
 from pathlib import Path
@@ -105,27 +105,86 @@ async def search_broll_pixabay(query: str, api_key: str, per_page: int = 15) -> 
     return results
 
 
-async def search_all_broll(query: str, limit: int = 20) -> List[Dict[str, Any]]:
-    """Busca clips en todas las plataformas configuradas."""
+# Glosario de traducción rápida para bancos de stock en inglés
+STOCK_TRANSLATION_MAP = {
+    "impresora 3d": "3d printer",
+    "impresion 3d": "3d printing",
+    "imprimiendo": "3d printing timelapse",
+    "soporte": "support tree",
+    "soportes": "tree supports 3d printing",
+    "soportes en arbol": "tree support 3d printing",
+    "cama caliente": "heated bed build plate",
+    "placa pei": "pei sheet build plate",
+    "boquilla": "3d printer nozzle",
+    "boquillas": "brass nozzle extruder",
+    "filamento": "3d printing filament spool",
+    "extrusor": "direct drive extruder",
+    "atasco": "clogged extruder nozzle",
+    "purga": "filament purge poop",
+    "resina": "resin 3d printer",
+    "calibracion": "bed leveling 3d printer",
+    "taller": "maker lab workshop 3d printer",
+    "robotica": "robotics engineering technology",
+    "tecnologia": "modern technology high tech",
+    "ordenador": "computer cad design 3d model",
+    "diseno": "cad 3d design modeling",
+}
+
+
+def expand_query_multilingual(query: str) -> List[str]:
+    """Expande y traduce la consulta a inglés para encontrar x10 más vídeos en Pexels y Pixabay."""
+    queries = [query.strip()]
+    q_lower = query.lower().strip()
+
+    # Reemplazo de frases compuestas primero (orden descendente por longitud)
+    expanded_english = q_lower
+    has_match = False
+    sorted_terms = sorted(STOCK_TRANSLATION_MAP.items(), key=lambda x: len(x[0]), reverse=True)
+    for es_term, en_term in sorted_terms:
+        if es_term in expanded_english:
+            expanded_english = expanded_english.replace(es_term, en_term)
+            has_match = True
+
+    if has_match and expanded_english != q_lower:
+        queries.append(expanded_english)
+
+    # Si la consulta no tiene "3d printer" y es técnica, añadir variante contextual
+    if any(k in q_lower for k in ["filamento", "cama", "soporte", "boquilla", "purga", "capa", "nozzle"]):
+        if "3d" not in expanded_english:
+            queries.append(f"3d printing {expanded_english}")
+
+    return list(dict.fromkeys(queries))
+
+
+async def search_all_broll(query: str, limit: int = 80) -> List[Dict[str, Any]]:
+    """Busca masivamente clips en todas las plataformas combinando términos en español e inglés."""
     config = load_config()
     pexels_key = config.get("pexels_api_key", "").strip()
     pixabay_key = config.get("pixabay_api_key", "").strip()
-    
-    all_results = []
-    
-    # Búsqueda en paralelo
-    if pexels_key:
-        p_res = await search_broll_pexels(query, pexels_key, per_page=limit // 2 + 5)
-        all_results.extend(p_res)
-    
-    if pixabay_key:
-        px_res = await search_broll_pixabay(query, pixabay_key, per_page=limit // 2 + 5)
-        all_results.extend(px_res)
 
-    # Si no hay claves configuradas, agregamos ejemplos de demostración libres verificados
-    # para que el usuario pueda probar de inmediato sin bloquearse
+    queries = expand_query_multilingual(query)
+    all_results = []
+    seen_ids = set()
+
+    for q in queries:
+        # Búsqueda en Pexels (hasta 50 por término)
+        if pexels_key:
+            p_res = await search_broll_pexels(q, pexels_key, per_page=40)
+            for r in p_res:
+                if r["id"] not in seen_ids:
+                    seen_ids.add(r["id"])
+                    all_results.append(r)
+
+        # Búsqueda en Pixabay (hasta 50 por término)
+        if pixabay_key:
+            px_res = await search_broll_pixabay(q, pixabay_key, per_page=40)
+            for r in px_res:
+                if r["id"] not in seen_ids:
+                    seen_ids.add(r["id"])
+                    all_results.append(r)
+
+    # Fallback demo enriquecido si no hay claves configuradas
     if not all_results:
-        # Clips demo de Creative Commons / stock abiertos
         all_results = [
             {
                 "id": "demo_1",
@@ -150,10 +209,23 @@ async def search_all_broll(query: str, limit: int = 20) -> List[Dict[str, Any]]:
                 "width": 1920,
                 "height": 1080,
                 "quality": "1080p",
+            },
+            {
+                "id": "demo_3",
+                "source": "Stock Libre (Demo)",
+                "title": "Taller Maker de prototipado y robótica con impresoras",
+                "thumbnail": "https://images.pexels.com/photos/256381/pexels-photo-256381.jpeg?auto=compress&cs=tinysrgb&w=640",
+                "preview_url": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.mp4",
+                "download_url": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.mp4",
+                "duration": 15,
+                "width": 1920,
+                "height": 1080,
+                "quality": "1080p",
             }
         ]
 
     return all_results[:limit]
+
 
 
 async def download_clip_file(download_url: str, output_path: Path) -> bool:

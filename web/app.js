@@ -157,20 +157,22 @@ async function searchBroll() {
     gallery.innerHTML = `
         <div class="col-span-full py-16 text-center text-blue-400 space-y-3">
             <div class="w-10 h-10 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto"></div>
-            <p class="text-sm font-medium">Buscando clips de alta resolución en Pexels y Pixabay...</p>
+            <p class="text-sm font-medium">Buscando masivamente en español e inglés en Pexels y Pixabay...</p>
         </div>
     `;
 
     try {
+        // Buscar masivamente (hasta 80 clips en español e inglés combinados)
         const resp = await fetch('/api/broll/search', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ query: query, limit: 20 })
+            body: JSON.stringify({ query: query, limit: 80 })
         });
 
         const data = await resp.json();
         state.searchResults = data.results || [];
         renderBrollGallery(state.searchResults);
+        showToast(`Se han encontrado ${state.searchResults.length} clips para tu contenido.`, 'info');
     } catch (e) {
         gallery.innerHTML = `<div class="col-span-full py-10 text-center text-rose-400">Error buscando B-Roll: ${e.message}</div>`;
     }
@@ -193,32 +195,39 @@ function renderBrollGallery(clips) {
     clips.forEach(clip => {
         const isSelected = state.selectedBrollClips.some(c => c.id === clip.id);
         const card = document.createElement('div');
-        card.className = `video-card relative bg-gray-900 border ${isSelected ? 'border-blue-500 ring-2 ring-blue-500/30' : 'border-gray-800'} rounded-xl overflow-hidden shadow-lg flex flex-col`;
+        // Permitir clic en cualquier parte de la tarjeta para seleccionar
+        card.className = `video-card cursor-pointer relative bg-gray-900 border ${isSelected ? 'border-blue-500 ring-2 ring-blue-500/50 bg-blue-950/20' : 'border-gray-800 hover:border-gray-700'} rounded-xl overflow-hidden shadow-lg flex flex-col transition-all select-none`;
 
         card.innerHTML = `
-            <div class="relative aspect-video bg-black overflow-hidden group cursor-pointer">
+            <div class="relative aspect-video bg-black overflow-hidden group">
                 <img src="${clip.thumbnail}" alt="${clip.title}" class="w-full h-full object-cover transition-opacity duration-300 group-hover:opacity-0">
                 <video src="${clip.preview_url}" loop muted playsinline preload="none" class="absolute inset-0 w-full h-full object-cover opacity-0 group-hover:opacity-100 transition-opacity duration-300"></video>
                 
-                <div class="absolute top-2 left-2 flex gap-1">
+                <div class="absolute top-2 left-2 flex gap-1 z-10 pointer-events-none">
                     <span class="px-2 py-0.5 rounded bg-black/70 backdrop-blur-md text-[10px] font-bold text-blue-400 border border-white/10">${clip.quality || '1080p'}</span>
                     <span class="px-2 py-0.5 rounded bg-black/70 backdrop-blur-md text-[10px] font-medium text-gray-300 border border-white/10">${clip.source}</span>
                 </div>
 
-                <div class="absolute bottom-2 right-2 px-2 py-0.5 rounded bg-black/70 backdrop-blur-md text-[10px] font-mono text-gray-300">
+                <div class="absolute bottom-2 right-2 px-2 py-0.5 rounded bg-black/70 backdrop-blur-md text-[10px] font-mono text-gray-300 pointer-events-none">
                     ${clip.duration}s
                 </div>
             </div>
 
-            <div class="p-3 flex items-center justify-between gap-2 flex-1">
-                <div class="truncate text-xs font-medium text-gray-200" title="${clip.title}">
+            <div class="p-3 flex items-center justify-between gap-3 flex-1">
+                <div class="truncate text-xs font-medium ${isSelected ? 'text-blue-200 font-semibold' : 'text-gray-300'}" title="${clip.title}">
                     ${clip.title}
                 </div>
-                <input type="checkbox" ${isSelected ? 'checked' : ''} onchange="toggleClipSelection('${clip.id}')" class="w-4 h-4 rounded text-blue-600 bg-gray-800 border-gray-700 focus:ring-blue-500 cursor-pointer">
+
+                <!-- Tick / Checkmark de Selección en la Esquina Inferior Derecha -->
+                <div class="flex-shrink-0 flex items-center justify-center">
+                    <div class="w-6 h-6 rounded-lg flex items-center justify-center border transition-all ${isSelected ? 'bg-blue-600 border-blue-400 text-white shadow-md shadow-blue-500/30' : 'bg-gray-800/80 border-gray-700 text-transparent hover:border-gray-500'}">
+                        <i class="fa-solid fa-check text-xs"></i>
+                    </div>
+                </div>
             </div>
         `;
 
-        // Reproducir preview al hacer hover
+        // Reproducir preview al dejar el ratón encima (hover) sin alterar la selección
         const videoEl = card.querySelector('video');
         card.addEventListener('mouseenter', () => {
             if (videoEl && videoEl.paused) videoEl.play().catch(() => {});
@@ -228,6 +237,11 @@ function renderBrollGallery(clips) {
                 videoEl.pause();
                 videoEl.currentTime = 0;
             }
+        });
+
+        // Clic en cualquier parte de la tarjeta para alternar la selección
+        card.addEventListener('click', (e) => {
+            toggleClipSelection(clip.id);
         });
 
         gallery.appendChild(card);
