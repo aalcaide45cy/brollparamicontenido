@@ -948,7 +948,7 @@ async function loadModelsStatus() {
         totalEl.innerText = data.total_formatted || '0.00 GB';
 
         tableEl.innerHTML = '';
-        let hasActiveDownloads = false;
+        const hasActiveDownloads = data.recommended && data.recommended.some(m => m.downloading || m.queued);
 
         const filtered = data.recommended.filter(m => {
             if (!state.modelsCategoryFilter || state.modelsCategoryFilter === 'all') return true;
@@ -1051,21 +1051,29 @@ async function loadModelsStatus() {
 
 async function downloadModel(modelId) {
     try {
-        await fetch('/api/models/download', {
+        const resp = await fetch('/api/models/download', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ model_id: modelId })
         });
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}));
+            throw new Error(err.detail || `Error HTTP ${resp.status}`);
+        }
         showToast('Modelo añadido a la cola de descarga ultrarrápida (8 hilos).', 'info');
         loadModelsStatus();
     } catch (e) {
-        showToast(e.message, 'error');
+        showToast(`Error al iniciar descarga: ${e.message}`, 'error');
     }
 }
 
 async function downloadAllModels() {
     try {
         const resp = await fetch('/api/models/download-all', { method: 'POST' });
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}));
+            throw new Error(err.detail || `Error HTTP ${resp.status}`);
+        }
         const data = await resp.json();
         if (data.count > 0) {
             showToast(`Se han añadido ${data.count} modelos a la cola de descarga rápida.`, 'info');

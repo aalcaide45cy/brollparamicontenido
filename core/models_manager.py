@@ -106,7 +106,7 @@ RECOMMENDED_MODELS = [
 # Estado global de tareas y cola de descargas
 DOWNLOAD_TASKS: Dict[str, Dict[str, Any]] = {}
 DOWNLOAD_QUEUE: List[str] = []
-QUEUE_LOCK = threading.Lock()
+QUEUE_LOCK = threading.RLock()
 IS_WORKER_ACTIVE = False
 
 
@@ -353,6 +353,7 @@ def _fast_download_worker(model_id: str, url: str, target_path: Path):
 def _process_next_in_queue():
     """Procesa el siguiente modelo de la cola."""
     global IS_WORKER_ACTIVE
+    next_model_id = None
     with QUEUE_LOCK:
         if not DOWNLOAD_QUEUE:
             IS_WORKER_ACTIVE = False
@@ -381,6 +382,7 @@ def start_model_download(model_id: str) -> bool:
     if not model_info:
         return False
 
+    should_start = False
     with QUEUE_LOCK:
         current_status = DOWNLOAD_TASKS.get(model_id, {}).get("status")
         if current_status not in ("downloading", "queued"):
@@ -393,7 +395,10 @@ def start_model_download(model_id: str) -> bool:
             }
 
         if not IS_WORKER_ACTIVE:
-            _process_next_in_queue()
+            should_start = True
+
+    if should_start:
+        _process_next_in_queue()
     return True
 
 
