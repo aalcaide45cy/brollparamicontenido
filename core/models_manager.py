@@ -106,6 +106,7 @@ RECOMMENDED_MODELS = [
 # Estado global de tareas y cola de descargas
 DOWNLOAD_TASKS: Dict[str, Dict[str, Any]] = {}
 DOWNLOAD_QUEUE: List[str] = []
+CANCEL_EVENTS: Dict[str, threading.Event] = {}
 QUEUE_LOCK = threading.RLock()
 IS_WORKER_ACTIVE = False
 
@@ -226,16 +227,19 @@ def purge_category(category: str) -> int:
     return count
 
 
-def _download_part(cdn_url: str, start: int, end: int, temp_path: Path, progress_callback):
+def _download_part(cdn_url: str, start: int, end: int, temp_path: Path, progress_callback, cancel_event: threading.Event):
     """Descarga un rango específico de bytes en paralelo directamente desde la CDN de Hugging Face."""
     headers = {"Range": f"bytes={start}-{end}"}
     with httpx.Client(timeout=120.0, follow_redirects=True) as client:
         with client.stream("GET", cdn_url, headers=headers) as resp:
             if resp.status_code not in (200, 206):
+                cancel_event.set()
                 raise RuntimeError(f"HTTP {resp.status_code} al descargar rango {start}-{end}")
             pos = start
             with open(temp_path, "r+b") as f:
                 for chunk in resp.iter_bytes(chunk_size=1024 * 1024 * 2):  # Buffers de 2 MB
+                    if cancel_event.is_set():
+                        raise RuntimeError("Descarga cancelada por el usuario")
                     if chunk:
                         f.seek(pos)
                         f.write(chunk)
@@ -247,16 +251,20 @@ def _fast_download_worker(model_id: str, url: str, target_path: Path):
     """Worker de descarga ultrarrápida multihilo con estimación de velocidad y ETA."""
     target_path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = target_path.with_suffix(".downloading")
+    cancel_event = threading.Event()
+    with QUEUE_LOCK:
+        CANCEL_EVENTS[model_id] = cancel_event
 
     try:
-        DOWNLOAD_TASKS[model_id] = {
-            "status": "downloading",
-            "percent": 0,
-            "downloaded": 0,
-            "total": 0,
-            "speed_mb": "Iniciando...",
-            "eta": "Calculando..."
-        }
+        with QUEUE_LOCK:
+            DOWNLOAD_TASKS[model_id] = {
+                "status": "downloading",
+                "percent": 0,
+                "downloaded": 0,
+                "total": 0,
+                "speed_mb": "Iniciando...",
+                "eta": "Calculando..."
+            }
 
         # 1. Resolver redirección directa a la CDN
         with httpx.Client(timeout=30.0, follow_redirects=True) as client:
@@ -264,6 +272,9 @@ def _fast_download_worker(model_id: str, url: str, target_path: Path):
             cdn_url = str(head_resp.url)
             total = int(head_resp.headers.get("content-length", 0))
             accept_ranges = head_resp.headers.get("accept-ranges") == "bytes"
+
+        if cancel_event.is_set():
+            raise RuntimeError("Descarga cancelada por el usuario")
 
         if total <= 0:
             raise RuntimeError("No se pudo determinar el tamaño del archivo en Hugging Face")
@@ -284,6 +295,8 @@ def _fast_download_worker(model_id: str, url: str, target_path: Path):
 
         def on_chunk(chunk_len):
             nonlocal downloaded_bytes, last_time, last_bytes, speed_str, eta_str
+            if cancel_event.is_set():
+                return
             with lock:
                 downloaded_bytes += chunk_len
                 now = time.time()
@@ -300,14 +313,15 @@ def _fast_download_worker(model_id: str, url: str, target_path: Path):
                         eta_str = f"{rem_sec // 60}m {rem_sec % 60}s" if rem_sec >= 60 else f"{rem_sec}s"
 
                 pct = int((downloaded_bytes / total) * 100) if total > 0 else 0
-                DOWNLOAD_TASKS[model_id] = {
-                    "status": "downloading",
-                    "percent": min(pct, 99),
-                    "downloaded": downloaded_bytes,
-                    "total": total,
-                    "speed_mb": speed_str,
-                    "eta": eta_str
-                }
+                if not cancel_event.is_set():
+                    DOWNLOAD_TASKS[model_id] = {
+                        "status": "downloading",
+                        "percent": min(pct, 99),
+                        "downloaded": downloaded_bytes,
+                        "total": total,
+                        "speed_mb": speed_str,
+                        "eta": eta_str
+                    }
 
         # 3. Descarga simultánea en 8 hilos si soporta Range, o 1 hilo si no
         num_workers = 8 if accept_ranges else 1
@@ -320,33 +334,52 @@ def _fast_download_worker(model_id: str, url: str, target_path: Path):
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
             futures = [
-                executor.submit(_download_part, cdn_url, r[0], r[1], temp_path, on_chunk)
+                executor.submit(_download_part, cdn_url, r[0], r[1], temp_path, on_chunk, cancel_event)
                 for r in ranges
             ]
-            for f in concurrent.futures.as_completed(futures):
-                f.result()
+            try:
+                for f in concurrent.futures.as_completed(futures):
+                    if cancel_event.is_set():
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        raise RuntimeError("Descarga cancelada por el usuario")
+                    f.result()
+            except Exception:
+                cancel_event.set()
+                executor.shutdown(wait=False, cancel_futures=True)
+                raise
+
+        if cancel_event.is_set():
+            raise RuntimeError("Descarga cancelada por el usuario")
 
         # 4. Renombrar al archivo final al completar
         if temp_path.exists():
             if target_path.exists():
                 target_path.unlink()
             temp_path.rename(target_path)
-            DOWNLOAD_TASKS[model_id] = {
-                "status": "completed",
-                "percent": 100,
-                "downloaded": total,
-                "total": total,
-                "speed_mb": "Completado",
-                "eta": "0s"
-            }
+            with QUEUE_LOCK:
+                DOWNLOAD_TASKS[model_id] = {
+                    "status": "completed",
+                    "percent": 100,
+                    "downloaded": total,
+                    "total": total,
+                    "speed_mb": "Completado",
+                    "eta": "0s"
+                }
     except Exception as e:
-        DOWNLOAD_TASKS[model_id] = {"status": "error", "error": str(e), "percent": 0}
+        was_cancelled = cancel_event.is_set() or "cancelada" in str(e).lower()
+        with QUEUE_LOCK:
+            if was_cancelled:
+                DOWNLOAD_TASKS.pop(model_id, None)
+            else:
+                DOWNLOAD_TASKS[model_id] = {"status": "error", "error": str(e), "percent": 0}
         if temp_path.exists():
             try:
                 temp_path.unlink()
             except Exception:
                 pass
     finally:
+        with QUEUE_LOCK:
+            CANCEL_EVENTS.pop(model_id, None)
         _process_next_in_queue()
 
 
@@ -400,6 +433,51 @@ def start_model_download(model_id: str) -> bool:
     if should_start:
         _process_next_in_queue()
     return True
+
+
+def cancel_model_download(model_id: str) -> bool:
+    """Cancela la descarga de un modelo específico, ya esté en cola o descargándose activamente."""
+    with QUEUE_LOCK:
+        cancelled = False
+        # 1. Si está esperando en la cola
+        if model_id in DOWNLOAD_QUEUE:
+            DOWNLOAD_QUEUE.remove(model_id)
+            DOWNLOAD_TASKS.pop(model_id, None)
+            cancelled = True
+
+        # 2. Si se está descargando activamente en este momento
+        if model_id in CANCEL_EVENTS:
+            CANCEL_EVENTS[model_id].set()
+            DOWNLOAD_TASKS.pop(model_id, None)
+            cancelled = True
+
+        # 3. Limpieza preventiva en tasks
+        if model_id in DOWNLOAD_TASKS:
+            status = DOWNLOAD_TASKS[model_id].get("status")
+            if status in ("queued", "downloading"):
+                DOWNLOAD_TASKS.pop(model_id, None)
+                cancelled = True
+
+    return cancelled
+
+
+def cancel_all_downloads() -> int:
+    """Cancela todas las descargas activas y vacía la cola completa."""
+    count = 0
+    with QUEUE_LOCK:
+        count += len(DOWNLOAD_QUEUE)
+        DOWNLOAD_QUEUE.clear()
+
+        for mid, evt in list(CANCEL_EVENTS.items()):
+            evt.set()
+            count += 1
+
+        for mid in list(DOWNLOAD_TASKS.keys()):
+            st = DOWNLOAD_TASKS.get(mid, {}).get("status")
+            if st in ("queued", "downloading"):
+                DOWNLOAD_TASKS.pop(mid, None)
+
+    return count
 
 
 def download_all_models() -> List[str]:

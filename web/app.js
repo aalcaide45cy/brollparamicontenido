@@ -961,7 +961,10 @@ async function loadModelsStatus() {
         totalEl.innerText = data.total_formatted || '0.00 GB';
 
         tableEl.innerHTML = '';
-        let hasActiveDownloads = Boolean(data.recommended && data.recommended.some(m => m.downloading || m.queued));
+        let hasActiveDownloads = Boolean(
+            (data.recommended && data.recommended.some(m => m.downloading || m.queued)) ||
+            (data.queue_length && data.queue_length > 0)
+        );
 
         const filtered = data.recommended.filter(m => {
             if (!state.modelsCategoryFilter || state.modelsCategoryFilter === 'all') return true;
@@ -990,7 +993,7 @@ async function loadModelsStatus() {
                 `;
             } else if (m.downloading) {
                 actionBtn = `
-                    <div class="space-y-1.5 w-56 text-right">
+                    <div class="space-y-1.5 w-60 text-right">
                         <div class="flex items-center justify-between text-xs font-semibold text-blue-300">
                             <span><i class="fa-solid fa-spinner animate-spin mr-1"></i> ${m.download_percent}%</span>
                             <span class="text-[11px] font-mono text-gray-300">${m.speed || 'Descargando...'}</span>
@@ -998,14 +1001,24 @@ async function loadModelsStatus() {
                         <div class="w-full h-2 bg-gray-800 rounded-full overflow-hidden border border-blue-900/60">
                             <div class="h-full bg-gradient-to-r from-blue-500 to-indigo-500 transition-all duration-300" style="width: ${m.download_percent}%"></div>
                         </div>
-                        <div class="text-[10px] text-gray-400 font-mono">Restante: ${m.eta || '--'}</div>
+                        <div class="flex items-center justify-between text-[10px] text-gray-400 font-mono">
+                            <span>Restante: ${m.eta || '--'}</span>
+                            <button onclick="cancelModelDownload('${m.id}')" class="px-2 py-0.5 rounded bg-rose-950/80 hover:bg-rose-900 border border-rose-800/60 text-rose-300 text-[10px] font-bold transition-all flex items-center gap-1" title="Cancelar esta descarga">
+                                <i class="fa-solid fa-xmark"></i> Cancelar
+                            </button>
+                        </div>
                     </div>
                 `;
             } else if (m.queued) {
                 actionBtn = `
-                    <span class="px-3 py-1.5 rounded-lg bg-amber-900/30 border border-amber-700/50 text-amber-300 text-xs font-semibold flex items-center gap-1.5">
-                        <i class="fa-solid fa-clock"></i> En cola de descarga
-                    </span>
+                    <div class="flex items-center gap-2">
+                        <span class="px-3 py-1.5 rounded-lg bg-amber-900/30 border border-amber-700/50 text-amber-300 text-xs font-semibold flex items-center gap-1.5">
+                            <i class="fa-solid fa-clock"></i> En cola
+                        </span>
+                        <button onclick="cancelModelDownload('${m.id}')" class="px-2.5 py-1.5 rounded-lg bg-rose-950/60 hover:bg-rose-900 border border-rose-800/60 text-rose-300 text-xs font-medium transition-all flex items-center gap-1" title="Quitar de la cola de descarga">
+                            <i class="fa-solid fa-xmark"></i> Cancelar
+                        </button>
+                    </div>
                 `;
             } else {
                 actionBtn = `
@@ -1033,8 +1046,17 @@ async function loadModelsStatus() {
             tableEl.appendChild(row);
         });
 
-        // Actualizar botón "Descargar Todos"
+        // Actualizar botón "Descargar Todos" y "Cancelar Cola"
         const btnDownloadAll = document.getElementById('btn-download-all-models');
+        const btnCancelAll = document.getElementById('btn-cancel-all-models');
+        if (btnCancelAll) {
+            if (hasActiveDownloads) {
+                btnCancelAll.classList.remove('hidden');
+            } else {
+                btnCancelAll.classList.add('hidden');
+            }
+        }
+
         if (btnDownloadAll) {
             const allInstalled = data.recommended.every(m => m.installed);
             btnDownloadAll.disabled = allInstalled || hasActiveDownloads;
@@ -1094,6 +1116,39 @@ async function downloadAllModels() {
         loadModelsStatus();
     } catch (e) {
         showToast(`Error al descargar todos: ${e.message}`, 'error');
+    }
+}
+
+async function cancelModelDownload(modelId) {
+    try {
+        const resp = await fetch('/api/models/cancel', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model_id: modelId })
+        });
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}));
+            throw new Error(err.detail || `Error HTTP ${resp.status}`);
+        }
+        showToast('Descarga cancelada correctamente.', 'info');
+        loadModelsStatus();
+    } catch (e) {
+        showToast(`Error al cancelar: ${e.message}`, 'error');
+    }
+}
+
+async function cancelAllModelsDownloads() {
+    try {
+        const resp = await fetch('/api/models/cancel-all', { method: 'POST' });
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}));
+            throw new Error(err.detail || `Error HTTP ${resp.status}`);
+        }
+        const data = await resp.json();
+        showToast(`Cola cancelada (${data.cancelled_count || 0} modelos detenidos).`, 'info');
+        loadModelsStatus();
+    } catch (e) {
+        showToast(`Error al cancelar cola: ${e.message}`, 'error');
     }
 }
 

@@ -12,6 +12,8 @@ from core.config_manager import load_config, save_config
 from core.models_manager import (
     get_models_status,
     start_model_download,
+    cancel_model_download,
+    cancel_all_downloads,
     download_all_models,
     delete_model_file,
     purge_category,
@@ -136,6 +138,20 @@ async def models_download_endpoint(req: ModelActionRequest):
 async def models_download_all_endpoint():
     queued = download_all_models()
     return {"status": "started", "queued_models": queued, "count": len(queued)}
+
+
+@app.post("/api/models/cancel")
+async def models_cancel_endpoint(req: ModelActionRequest):
+    if not req.model_id:
+        raise HTTPException(status_code=400, detail="model_id requerido")
+    success = cancel_model_download(req.model_id)
+    return {"status": "ok", "cancelled": success, "model_id": req.model_id}
+
+
+@app.post("/api/models/cancel-all")
+async def models_cancel_all_endpoint():
+    count = cancel_all_downloads()
+    return {"status": "ok", "cancelled_count": count}
 
 
 @app.post("/api/models/delete")
