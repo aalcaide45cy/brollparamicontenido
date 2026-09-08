@@ -961,7 +961,7 @@ async function loadModelsStatus() {
         totalEl.innerText = data.total_formatted || '0.00 GB';
 
         tableEl.innerHTML = '';
-        const hasActiveDownloads = data.recommended && data.recommended.some(m => m.downloading || m.queued);
+        let hasActiveDownloads = Boolean(data.recommended && data.recommended.some(m => m.downloading || m.queued));
 
         const filtered = data.recommended.filter(m => {
             if (!state.modelsCategoryFilter || state.modelsCategoryFilter === 'all') return true;
@@ -989,7 +989,6 @@ async function loadModelsStatus() {
                     </div>
                 `;
             } else if (m.downloading) {
-                hasActiveDownloads = true;
                 actionBtn = `
                     <div class="space-y-1.5 w-56 text-right">
                         <div class="flex items-center justify-between text-xs font-semibold text-blue-300">
@@ -1003,7 +1002,6 @@ async function loadModelsStatus() {
                     </div>
                 `;
             } else if (m.queued) {
-                hasActiveDownloads = true;
                 actionBtn = `
                     <span class="px-3 py-1.5 rounded-lg bg-amber-900/30 border border-amber-700/50 text-amber-300 text-xs font-semibold flex items-center gap-1.5">
                         <i class="fa-solid fa-clock"></i> En cola de descarga
