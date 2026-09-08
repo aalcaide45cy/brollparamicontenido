@@ -7,6 +7,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "download_path": str(Path(__file__).resolve().parent.parent / "Proyectos_YouTube"),
     "models_dir": str(Path(__file__).resolve().parent.parent / "IAsModels"),
     "gemini_api_key": "",
+    "gemini_api_keys": [],
+    "gemini_model": "gemini-2.0-flash",
     "pexels_api_key": "",
     "pixabay_api_key": "",
     "ai_provider": "gemini",
@@ -14,6 +16,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "local_model_name": "qwen2.5-14b-instruct",
     "broll_quality": "1080p",
     "words_per_minute": 140,
+    "ui_zoom": "115%",
     "youtube_fixed_template": (
         "\n\n--- REDES Y COMUNIDAD ---\n"
         "📢 Canal de Telegram / Discord: https://...\n"

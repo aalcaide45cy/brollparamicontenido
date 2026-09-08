@@ -10,8 +10,32 @@ const state = {
     config: {},
 };
 
+// === ESCALADO Y ZOOM DE INTERFAZ ===
+function applyZoom(val) {
+    const scale = parseFloat(val);
+    document.documentElement.style.zoom = scale;
+    localStorage.setItem('capa_cero_zoom', val);
+    const selector = document.getElementById('zoom-selector');
+    if (selector) selector.value = val;
+}
+
+function adjustZoom(delta) {
+    let current = parseFloat(localStorage.getItem('capa_cero_zoom') || '1.15');
+    current = Math.min(Math.max(current + delta, 0.9), 1.6);
+    const rounded = (Math.round(current * 100) / 100).toString();
+    applyZoom(rounded);
+}
+
+function changeZoomSelect(val) {
+    applyZoom(val);
+}
+
 // Inicialización al cargar la página
 document.addEventListener('DOMContentLoaded', async () => {
+    // Restaurar zoom preferido (por defecto 115% para nitidez en 2K/4K)
+    const savedZoom = localStorage.getItem('capa_cero_zoom') || '1.15';
+    applyZoom(savedZoom);
+
     await loadSettings();
     await loadProjectsList();
     await loadModelsStatus();
@@ -571,7 +595,17 @@ async function loadSettings() {
         state.config = cfg;
 
         document.getElementById('cfg-download-path').value = cfg.download_path || '';
-        document.getElementById('cfg-gemini-key').value = cfg.gemini_api_key || '';
+        
+        // Cargar claves de Gemini (soporta lista o string)
+        const keysList = cfg.gemini_api_keys && cfg.gemini_api_keys.length > 0
+            ? cfg.gemini_api_keys.join('\n')
+            : (cfg.gemini_api_key || '');
+        document.getElementById('cfg-gemini-key').value = keysList;
+
+        if (document.getElementById('cfg-gemini-model')) {
+            document.getElementById('cfg-gemini-model').value = cfg.gemini_model || 'gemini-2.0-flash';
+        }
+
         document.getElementById('cfg-pexels-key').value = cfg.pexels_api_key || '';
         document.getElementById('cfg-pixabay-key').value = cfg.pixabay_api_key || '';
         document.getElementById('cfg-ai-provider').value = cfg.ai_provider || 'gemini';
@@ -583,8 +617,9 @@ async function loadSettings() {
             badge.className = 'px-2.5 py-1 rounded-md bg-emerald-900/30 border border-emerald-700/40 text-emerald-400 text-xs font-semibold flex items-center gap-1.5';
             badge.innerHTML = '<i class="fa-solid fa-microchip text-xs"></i> <span>RTX 4090 Local</span>';
         } else {
+            const mName = cfg.gemini_model ? cfg.gemini_model.replace('gemini-', '').toUpperCase() : '2.0 FLASH';
             badge.className = 'px-2.5 py-1 rounded-md bg-blue-900/30 border border-blue-700/40 text-blue-400 text-xs font-semibold flex items-center gap-1.5';
-            badge.innerHTML = '<i class="fa-solid fa-cloud text-xs"></i> <span>Gemini Grounding</span>';
+            badge.innerHTML = `<i class="fa-solid fa-cloud text-xs"></i> <span>Gemini ${mName}</span>`;
         }
     } catch (e) {
         console.error('Error cargando configuración:', e);
@@ -592,9 +627,14 @@ async function loadSettings() {
 }
 
 async function saveSettings() {
+    const rawKeys = document.getElementById('cfg-gemini-key').value;
+    const parsedKeys = rawKeys.split(/[\n,]+/).map(k => k.trim()).filter(k => k.length > 0);
+
     const newCfg = {
         download_path: document.getElementById('cfg-download-path').value.trim(),
-        gemini_api_key: document.getElementById('cfg-gemini-key').value.trim(),
+        gemini_api_key: parsedKeys.length > 0 ? parsedKeys[0] : '',
+        gemini_api_keys: parsedKeys,
+        gemini_model: document.getElementById('cfg-gemini-model') ? document.getElementById('cfg-gemini-model').value : 'gemini-2.0-flash',
         pexels_api_key: document.getElementById('cfg-pexels-key').value.trim(),
         pixabay_api_key: document.getElementById('cfg-pixabay-key').value.trim(),
         ai_provider: document.getElementById('cfg-ai-provider').value,
@@ -609,7 +649,7 @@ async function saveSettings() {
         });
         const data = await resp.json();
         state.config = data.config;
-        showToast('Ajustes guardados permanentemente.', 'success');
+        showToast('Ajustes guardados permanentemente (Rotación de claves activa).', 'success');
         loadSettings();
     } catch (e) {
         showToast(`Error al guardar: ${e.message}`, 'error');

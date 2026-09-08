@@ -1,4 +1,4 @@
-﻿import json
+import json
 import re
 import os
 import httpx
@@ -33,39 +33,72 @@ def search_web_duckduckgo(query: str, max_results: int = 4) -> str:
         return ""
 
 
+def get_gemini_keys_pool(config: dict) -> List[str]:
+    """Obtiene la lista de todas las claves API disponibles para rotacion automatica."""
+    keys = []
+    single_key = config.get("gemini_api_key", "").strip()
+    if single_key:
+        keys.append(single_key)
+    for k in config.get("gemini_api_keys", []):
+        if isinstance(k, str) and k.strip() and k.strip() not in keys:
+            keys.append(k.strip())
+        elif isinstance(k, dict) and k.get("key") and k.get("key").strip() not in keys:
+            keys.append(k["key"].strip())
+    return keys
+
+
 async def query_gemini(prompt: str, system_instruction: Optional[str] = None, use_grounding: bool = True) -> str:
-    """Consulta la API de Gemini usando Google Search Grounding para verificacion."""
+    """Consulta Gemini con rotación automática de claves gratuitas y modelo configurable."""
     config = load_config()
-    api_key = config.get("gemini_api_key", "").strip()
-    if not api_key:
-        raise ValueError("No se ha configurado la API Key de Gemini en Ajustes.")
+    keys = get_gemini_keys_pool(config)
+    if not keys:
+        raise ValueError("No se ha configurado ninguna clave API de Gemini en Ajustes.")
 
-    client = genai.Client(api_key=api_key)
-    
-    tools = []
-    if use_grounding:
-        tools.append(types.Tool(google_search=types.GoogleSearch()))
+    model_name = config.get("gemini_model", "gemini-2.0-flash")
 
-    gen_config = types.GenerateContentConfig(
-        temperature=0.7,
-        tools=tools if tools else None,
-        system_instruction=system_instruction,
-    )
+    last_error = None
+    for idx, key in enumerate(keys):
+        try:
+            client = genai.Client(api_key=key)
+            tools = []
+            if use_grounding:
+                tools.append(types.Tool(google_search=types.GoogleSearch()))
 
-    # Usar gemini-2.5-flash o gemini-2.0-flash para velocidad y maxima calidad
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt,
-        config=gen_config,
-    )
-    return response.text or ""
+            gen_config = types.GenerateContentConfig(
+                temperature=0.7,
+                tools=tools if tools else None,
+                system_instruction=system_instruction,
+            )
+
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config=gen_config,
+            )
+            return response.text or ""
+        except Exception as e:
+            last_error = e
+            print(f"[GEMINI ROTATION] Clave #{idx+1} agotada o con error ({e}). Rotando a siguiente clave...")
+            continue
+
+    raise RuntimeError(f"Todas las claves de Gemini configuradas ({len(keys)}) fallaron. Último error: {last_error}")
+
 
 
 async def query_local_llm(prompt: str, system_instruction: Optional[str] = None) -> str:
-    """Consulta un servidor LLM local compatible con OpenAI (llama.cpp, Ollama, vLLM)."""
+    """Consulta un servidor LLM local compatible con OpenAI (llama.cpp, Ollama, LM Studio)."""
     config = load_config()
-    endpoint = config.get("local_llm_endpoint", "http://127.0.0.1:8080/v1").rstrip("/") + "/chat/completions"
+    configured_endpoint = config.get("local_llm_endpoint", "http://127.0.0.1:8080/v1").rstrip("/") + "/chat/completions"
     model = config.get("local_model_name", "qwen2.5-14b-instruct")
+
+    candidate_endpoints = [
+        configured_endpoint,
+        "http://127.0.0.1:11434/v1/chat/completions",  # Ollama
+        "http://127.0.0.1:1234/v1/chat/completions",   # LM Studio
+        "http://127.0.0.1:8080/v1/chat/completions",   # llama.cpp
+    ]
+    seen = set()
+    endpoints = [x for x in candidate_endpoints if not (x in seen or seen.add(x))]
 
     messages = []
     if system_instruction:
@@ -79,13 +112,22 @@ async def query_local_llm(prompt: str, system_instruction: Optional[str] = None)
         "max_tokens": 3000,
     }
 
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        resp = await client.post(endpoint, json=payload)
-        if resp.status_code == 200:
-            data = resp.json()
-            return data["choices"][0]["message"]["content"]
-        else:
-            raise RuntimeError(f"Error en servidor local ({resp.status_code}): {resp.text}")
+    last_err = None
+    for ep in endpoints:
+        try:
+            async with httpx.AsyncClient(timeout=90.0) as client:
+                resp = await client.post(ep, json=payload)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    return data["choices"][0]["message"]["content"]
+                else:
+                    last_err = f"HTTP {resp.status_code} en {ep}"
+        except Exception as e:
+            last_err = str(e)
+            continue
+
+    raise RuntimeError(f"No se pudo conectar a ningún motor local (Ollama, LM Studio o llama.cpp). Detalle: {last_err}")
+
 
 
 async def generate_ai_text(prompt: str, system_instruction: Optional[str] = None, use_grounding: bool = True) -> str:

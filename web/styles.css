@@ -16,6 +16,10 @@ body {
     color: #F3F4F6;
 }
 
+html {
+    transition: zoom 0.15s ease-out;
+}
+
 code, pre, .font-mono {
     font-family: 'JetBrains Mono', monospace;
 }
