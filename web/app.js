@@ -64,11 +64,130 @@ function changeZoomSelect(val) {
     applyZoom(val, true);
 }
 
+// === HISTORIAL DE TEMAS DEL GUION ===
+const TOPIC_HISTORY_KEY = 'capa_cero_topic_history';
+
+function getTopicHistory() {
+    try {
+        const raw = localStorage.getItem(TOPIC_HISTORY_KEY);
+        return raw ? JSON.parse(raw) : [];
+    } catch {
+        return [];
+    }
+}
+
+function saveTopicToHistory(topic) {
+    if (!topic || topic.trim().length < 3) return;
+    const cleanTopic = topic.trim();
+    let history = getTopicHistory();
+    history = history.filter(t => t.toLowerCase() !== cleanTopic.toLowerCase());
+    history.unshift(cleanTopic);
+    if (history.length > 20) history = history.slice(0, 20);
+    localStorage.setItem(TOPIC_HISTORY_KEY, JSON.stringify(history));
+    renderTopicHistory();
+}
+
+function selectHistoryTopic(topic) {
+    document.getElementById('script-topic').value = topic;
+    const viral = document.getElementById('viral-topic-input');
+    if (viral) viral.value = topic;
+    const broll = document.getElementById('broll-search-input');
+    if (broll) broll.value = topic;
+
+    const menu = document.getElementById('topic-history-menu');
+    if (menu) menu.classList.add('hidden');
+    showToast('Tema recuperado del historial.', 'info');
+}
+
+function clearTopicHistory(e) {
+    if (e) e.stopPropagation();
+    if (!confirm('¿Deseas vaciar todo el historial de temas?')) return;
+    localStorage.removeItem(TOPIC_HISTORY_KEY);
+    renderTopicHistory();
+    const menu = document.getElementById('topic-history-menu');
+    if (menu) menu.classList.add('hidden');
+    showToast('Historial de temas vaciado.', 'info');
+}
+
+function toggleTopicHistory(e) {
+    if (e) e.stopPropagation();
+    const menu = document.getElementById('topic-history-menu');
+    if (!menu) return;
+    menu.classList.toggle('hidden');
+    if (!menu.classList.contains('hidden')) {
+        renderTopicHistory();
+    }
+}
+
+function renderTopicHistory() {
+    const history = getTopicHistory();
+    const menu = document.getElementById('topic-history-menu');
+    const chipsContainer = document.getElementById('topic-history-chips');
+
+    // 1. Menú Popover
+    if (menu) {
+        if (history.length === 0) {
+            menu.innerHTML = `
+                <div class="p-3 text-center text-gray-500 italic text-xs">
+                    No hay temas en el historial todavía.<br>
+                    <span class="text-[10px] text-gray-600">Se guardarán automáticamente al generar guiones.</span>
+                </div>
+            `;
+        } else {
+            let html = `
+                <div class="flex items-center justify-between pb-1.5 mb-1 border-b border-gray-800 px-1 text-[11px] text-gray-400 font-semibold">
+                    <span>Temas Recientes (${history.length})</span>
+                    <button onclick="clearTopicHistory(event)" class="text-rose-400 hover:text-rose-300 text-[10px] transition-colors">Vaciar</button>
+                </div>
+                <div class="space-y-1">
+            `;
+            history.forEach(topic => {
+                const escaped = topic.replace(/"/g, '&quot;').replace(/'/g, "\\'");
+                html += `
+                    <div onclick="selectHistoryTopic('${escaped}')" class="p-2 rounded-lg hover:bg-gray-800 text-gray-200 cursor-pointer transition-colors flex items-start gap-2 group">
+                        <i class="fa-solid fa-rotate-left text-blue-400 text-[10px] mt-1 group-hover:scale-110 transition-transform"></i>
+                        <span class="line-clamp-2 text-xs leading-snug flex-1">${topic}</span>
+                    </div>
+                `;
+            });
+            html += `</div>`;
+            menu.innerHTML = html;
+        }
+    }
+
+    // 2. Chips Rápidos (últimos 3 temas)
+    if (chipsContainer) {
+        chipsContainer.innerHTML = '';
+        if (history.length > 0) {
+            history.slice(0, 3).forEach(topic => {
+                const chip = document.createElement('button');
+                chip.type = 'button';
+                chip.className = 'text-[11px] px-2.5 py-0.5 rounded-full bg-gray-800/80 hover:bg-gray-700 text-gray-300 border border-gray-700/60 transition-all truncate max-w-[200px] flex items-center gap-1.5';
+                chip.title = topic;
+                chip.innerHTML = `<i class="fa-solid fa-history text-[9px] text-blue-400"></i> <span class="truncate">${topic}</span>`;
+                chip.onclick = () => selectHistoryTopic(topic);
+                chipsContainer.appendChild(chip);
+            });
+        }
+    }
+}
+
 // Inicialización al cargar la página
 document.addEventListener('DOMContentLoaded', async () => {
     // Restaurar zoom preferido (por defecto 115% para nitidez en 2K/4K)
     const savedZoom = localStorage.getItem('capa_cero_zoom') || '1.15';
     applyZoom(savedZoom, false);
+
+    // Cargar historial de temas en pantalla
+    renderTopicHistory();
+
+    // Cerrar menú de historial al hacer clic fuera
+    document.addEventListener('click', (e) => {
+        const menu = document.getElementById('topic-history-menu');
+        if (menu && !menu.classList.contains('hidden') && !e.target.closest('#topic-history-menu') && !e.target.closest('button[onclick*="toggleTopicHistory"]')) {
+            menu.classList.add('hidden');
+        }
+    });
 
     // Limpiar cualquier residuo de autofill de credenciales en notas tecnicas
     const cleanAutofill = () => {
@@ -141,6 +260,9 @@ async function generateScript() {
         showToast('Por favor, escribe un tema para el vídeo.', 'warning');
         return;
     }
+
+    // Guardar en el historial de temas
+    saveTopicToHistory(topic);
 
     const context = document.getElementById('script-context').value.trim();
     const loader = document.getElementById('script-loader');
@@ -554,6 +676,8 @@ async function openFolder(path) {
 }
 
 // === GESTOR DE MODELOS (IAsModels) ===
+let modelsPollTimer = null;
+
 async function loadModelsStatus() {
     const totalEl = document.getElementById('models-total-size');
     const tableEl = document.getElementById('models-table-container');
@@ -565,6 +689,8 @@ async function loadModelsStatus() {
         totalEl.innerText = data.total_formatted || '0.00 GB';
 
         tableEl.innerHTML = '';
+        let hasActiveDownloads = false;
+
         data.recommended.forEach(m => {
             const row = document.createElement('div');
             row.className = 'p-4 rounded-xl bg-gray-950/40 border border-gray-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3';
@@ -582,14 +708,29 @@ async function loadModelsStatus() {
                     </div>
                 `;
             } else if (m.downloading) {
+                hasActiveDownloads = true;
                 actionBtn = `
-                    <span class="px-3 py-1 rounded-md bg-blue-900/40 border border-blue-700/60 text-blue-300 text-xs font-medium animate-pulse">
-                        <i class="fa-solid fa-spinner animate-spin"></i> Descargando (${m.download_percent}%)...
+                    <div class="space-y-1.5 w-56 text-right">
+                        <div class="flex items-center justify-between text-xs font-semibold text-blue-300">
+                            <span><i class="fa-solid fa-spinner animate-spin mr-1"></i> ${m.download_percent}%</span>
+                            <span class="text-[11px] font-mono text-gray-300">${m.speed || 'Descargando...'}</span>
+                        </div>
+                        <div class="w-full h-2 bg-gray-800 rounded-full overflow-hidden border border-blue-900/60">
+                            <div class="h-full bg-gradient-to-r from-blue-500 to-indigo-500 transition-all duration-300" style="width: ${m.download_percent}%"></div>
+                        </div>
+                        <div class="text-[10px] text-gray-400 font-mono">Restante: ${m.eta || '--'}</div>
+                    </div>
+                `;
+            } else if (m.queued) {
+                hasActiveDownloads = true;
+                actionBtn = `
+                    <span class="px-3 py-1.5 rounded-lg bg-amber-900/30 border border-amber-700/50 text-amber-300 text-xs font-semibold flex items-center gap-1.5">
+                        <i class="fa-solid fa-clock"></i> En cola de descarga
                     </span>
                 `;
             } else {
                 actionBtn = `
-                    <button onclick="downloadModel('${m.id}')" class="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition-all flex items-center gap-1.5 shadow">
+                    <button onclick="downloadModel('${m.id}')" class="px-3.5 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition-all flex items-center gap-1.5 shadow">
                         <i class="fa-solid fa-download"></i> Descargar (${m.size_gb} GB)
                     </button>
                 `;
@@ -607,6 +748,29 @@ async function loadModelsStatus() {
             `;
             tableEl.appendChild(row);
         });
+
+        // Actualizar botón "Descargar Todos"
+        const btnDownloadAll = document.getElementById('btn-download-all-models');
+        if (btnDownloadAll) {
+            const allInstalled = data.recommended.every(m => m.installed);
+            btnDownloadAll.disabled = allInstalled || hasActiveDownloads;
+            if (hasActiveDownloads) {
+                btnDownloadAll.className = 'px-3.5 py-2 rounded-lg bg-gray-800 text-gray-400 text-xs font-bold cursor-not-allowed flex items-center gap-1.5';
+                btnDownloadAll.innerHTML = '<i class="fa-solid fa-spinner animate-spin"></i> <span>Descargas en marcha...</span>';
+            } else if (allInstalled) {
+                btnDownloadAll.className = 'px-3.5 py-2 rounded-lg bg-emerald-950/60 border border-emerald-800/60 text-emerald-400 text-xs font-bold cursor-default flex items-center gap-1.5';
+                btnDownloadAll.innerHTML = '<i class="fa-solid fa-circle-check"></i> <span>Todos Instalados</span>';
+            } else {
+                btnDownloadAll.className = 'px-3.5 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold shadow-md shadow-blue-600/30 flex items-center gap-1.5 transition-all';
+                btnDownloadAll.innerHTML = '<i class="fa-solid fa-cloud-arrow-down"></i> <span>Descargar Todos los Modelos</span>';
+            }
+        }
+
+        // Auto-refresco mientras haya descargas activas o en cola
+        if (modelsPollTimer) clearTimeout(modelsPollTimer);
+        if (hasActiveDownloads) {
+            modelsPollTimer = setTimeout(loadModelsStatus, 2000);
+        }
     } catch (e) {
         tableEl.innerHTML = `<p class="text-xs text-rose-400">Error: ${e.message}</p>`;
     }
@@ -619,10 +783,25 @@ async function downloadModel(modelId) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ model_id: modelId })
         });
-        showToast('Descarga iniciada en segundo plano dentro de IAsModels.', 'info');
+        showToast('Modelo añadido a la cola de descarga ultrarrápida (8 hilos).', 'info');
         loadModelsStatus();
     } catch (e) {
         showToast(e.message, 'error');
+    }
+}
+
+async function downloadAllModels() {
+    try {
+        const resp = await fetch('/api/models/download-all', { method: 'POST' });
+        const data = await resp.json();
+        if (data.count > 0) {
+            showToast(`Se han añadido ${data.count} modelos a la cola de descarga rápida.`, 'info');
+        } else {
+            showToast('Todos los modelos ya están descargados.', 'success');
+        }
+        loadModelsStatus();
+    } catch (e) {
+        showToast(`Error al descargar todos: ${e.message}`, 'error');
     }
 }
 

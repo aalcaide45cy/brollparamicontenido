@@ -12,6 +12,7 @@ from core.config_manager import load_config, save_config
 from core.models_manager import (
     get_models_status,
     start_model_download,
+    download_all_models,
     delete_model_file,
     purge_category,
 )
@@ -128,6 +129,12 @@ async def models_download_endpoint(req: ModelActionRequest):
     if not success:
         raise HTTPException(status_code=404, detail="Modelo no encontrado en la lista recomendada")
     return {"status": "started", "model_id": req.model_id}
+
+
+@app.post("/api/models/download-all")
+async def models_download_all_endpoint():
+    queued = download_all_models()
+    return {"status": "started", "queued_models": queued, "count": len(queued)}
 
 
 @app.post("/api/models/delete")

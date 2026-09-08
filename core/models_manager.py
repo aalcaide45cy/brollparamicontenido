@@ -1,7 +1,9 @@
-﻿import os
+import os
 import shutil
 import asyncio
 import threading
+import time
+import concurrent.futures
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 import httpx
@@ -14,25 +16,25 @@ RECOMMENDED_MODELS = [
         "name": "Qwen 2.5 14B Instruct (Recomendado)",
         "category": "LLMs",
         "description": "Excelente en español, redacción técnica y guiones virales. Cabe entero en la RTX 4090.",
-        "size_gb": 9.0,
-        "filename": "qwen2.5-14b-instruct-q4_k_m.gguf",
-        "url": "https://huggingface.co/Qwen/Qwen2.5-14B-Instruct-GGUF/resolve/main/qwen2.5-14b-instruct-q4_k_m.gguf",
+        "size_gb": 8.4,
+        "filename": "Qwen2.5-14B-Instruct-Q4_K_M.gguf",
+        "url": "https://huggingface.co/bartowski/Qwen2.5-14B-Instruct-GGUF/resolve/main/Qwen2.5-14B-Instruct-Q4_K_M.gguf",
     },
     {
         "id": "qwen2.5-7b",
         "name": "Qwen 2.5 7B Instruct (Rápido / Ligero)",
         "category": "LLMs",
         "description": "Ultrarrápido para respuestas instantáneas de guion y consultas breves.",
-        "size_gb": 4.7,
-        "filename": "qwen2.5-7b-instruct-q4_k_m.gguf",
-        "url": "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/main/qwen2.5-7b-instruct-q4_k_m.gguf",
+        "size_gb": 4.4,
+        "filename": "Qwen2.5-7B-Instruct-Q4_K_M.gguf",
+        "url": "https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf",
     },
     {
         "id": "llama-3.1-8b",
         "name": "Llama 3.1 8B Instruct",
         "category": "LLMs",
         "description": "Modelo versátil de Meta, muy bueno estructurando ganchos y retención.",
-        "size_gb": 4.9,
+        "size_gb": 4.6,
         "filename": "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
         "url": "https://huggingface.co/bartowski/Meta-Llama-3.1-8B-Instruct-GGUF/resolve/main/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
     },
@@ -41,14 +43,17 @@ RECOMMENDED_MODELS = [
         "name": "FLUX.1 Schnell (Miniaturas en 4 pasos)",
         "category": "ImageGen",
         "description": "Generación hiperrealista de miniaturas y renders 3D en 2-4 segundos en tu RTX 4090.",
-        "size_gb": 11.2,
-        "filename": "flux1-schnell-q4_k_s.gguf",
-        "url": "https://huggingface.co/city96/FLUX.1-schnell-gguf/resolve/main/flux1-schnell-q4_k_s.gguf",
+        "size_gb": 6.3,
+        "filename": "flux1-schnell-Q4_K_S.gguf",
+        "url": "https://huggingface.co/city96/FLUX.1-schnell-gguf/resolve/main/flux1-schnell-Q4_K_S.gguf",
     },
 ]
 
-# Estado global de descargas en segundo plano
+# Estado global de tareas y cola de descargas
 DOWNLOAD_TASKS: Dict[str, Dict[str, Any]] = {}
+DOWNLOAD_QUEUE: List[str] = []
+QUEUE_LOCK = threading.Lock()
+IS_WORKER_ACTIVE = False
 
 
 def get_models_dir() -> Path:
@@ -114,12 +119,17 @@ def get_models_status() -> Dict[str, Any]:
         target = base_dir / rec["category"] / rec["filename"]
         installed = target.exists() and target.stat().st_size > 1024 * 1024
         download_info = DOWNLOAD_TASKS.get(rec["id"], None)
+        status_str = download_info.get("status") if download_info else None
+
         recommended_status.append({
             **rec,
             "installed": installed,
             "installed_size": format_bytes(target.stat().st_size) if installed else "0 GB",
-            "downloading": download_info.get("status") == "downloading" if download_info else False,
+            "downloading": status_str == "downloading",
+            "queued": status_str == "queued",
             "download_percent": download_info.get("percent", 0) if download_info else 0,
+            "speed": download_info.get("speed_mb", "") if download_info else "",
+            "eta": download_info.get("eta", "") if download_info else "",
         })
 
     return {
@@ -129,6 +139,7 @@ def get_models_status() -> Dict[str, Any]:
         "categories": cat_stats,
         "installed_models": installed_models,
         "recommended": recommended_status,
+        "queue_length": len(DOWNLOAD_QUEUE),
     }
 
 
@@ -161,53 +172,185 @@ def purge_category(category: str) -> int:
     return count
 
 
-def _download_worker(model_id: str, url: str, target_path: Path):
-    try:
-        DOWNLOAD_TASKS[model_id] = {"status": "downloading", "percent": 0, "downloaded": 0, "total": 0}
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-        temp_path = target_path.with_suffix(".downloading")
+def _download_part(cdn_url: str, start: int, end: int, temp_path: Path, progress_callback):
+    """Descarga un rango específico de bytes en paralelo directamente desde la CDN de Hugging Face."""
+    headers = {"Range": f"bytes={start}-{end}"}
+    with httpx.Client(timeout=120.0, follow_redirects=True) as client:
+        with client.stream("GET", cdn_url, headers=headers) as resp:
+            if resp.status_code not in (200, 206):
+                raise RuntimeError(f"HTTP {resp.status_code} al descargar rango {start}-{end}")
+            pos = start
+            with open(temp_path, "r+b") as f:
+                for chunk in resp.iter_bytes(chunk_size=1024 * 1024 * 2):  # Buffers de 2 MB
+                    if chunk:
+                        f.seek(pos)
+                        f.write(chunk)
+                        pos += len(chunk)
+                        progress_callback(len(chunk))
 
-        with httpx.Client(timeout=None, follow_redirects=True) as client:
-            with client.stream("GET", url) as resp:
-                if resp.status_code != 200:
-                    DOWNLOAD_TASKS[model_id] = {"status": "error", "error": f"HTTP {resp.status_code}"}
-                    return
-                
-                total = int(resp.headers.get("content-length", 0))
-                downloaded = 0
-                with open(temp_path, "wb") as f:
-                    for chunk in resp.iter_bytes(chunk_size=1024 * 512):
-                        if chunk:
-                            f.write(chunk)
-                            downloaded += len(chunk)
-                            percent = int((downloaded / total) * 100) if total > 0 else 0
-                            DOWNLOAD_TASKS[model_id] = {
-                                "status": "downloading",
-                                "percent": percent,
-                                "downloaded": downloaded,
-                                "total": total,
-                            }
-        
+
+def _fast_download_worker(model_id: str, url: str, target_path: Path):
+    """Worker de descarga ultrarrápida multihilo con estimación de velocidad y ETA."""
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = target_path.with_suffix(".downloading")
+
+    try:
+        DOWNLOAD_TASKS[model_id] = {
+            "status": "downloading",
+            "percent": 0,
+            "downloaded": 0,
+            "total": 0,
+            "speed_mb": "Iniciando...",
+            "eta": "Calculando..."
+        }
+
+        # 1. Resolver redirección directa a la CDN
+        with httpx.Client(timeout=30.0, follow_redirects=True) as client:
+            head_resp = client.head(url)
+            cdn_url = str(head_resp.url)
+            total = int(head_resp.headers.get("content-length", 0))
+            accept_ranges = head_resp.headers.get("accept-ranges") == "bytes"
+
+        if total <= 0:
+            raise RuntimeError("No se pudo determinar el tamaño del archivo en Hugging Face")
+
+        # 2. Pre-asignar archivo temporal
+        with open(temp_path, "wb") as f:
+            f.seek(total - 1)
+            f.write(b"\0")
+
+        # Métricas de velocidad
+        downloaded_bytes = 0
+        lock = threading.Lock()
+        start_time = time.time()
+        last_time = start_time
+        last_bytes = 0
+        speed_str = "0.0 MB/s"
+        eta_str = "Calculando..."
+
+        def on_chunk(chunk_len):
+            nonlocal downloaded_bytes, last_time, last_bytes, speed_str, eta_str
+            with lock:
+                downloaded_bytes += chunk_len
+                now = time.time()
+                dt = now - last_time
+                if dt >= 1.0:
+                    speed_bps = (downloaded_bytes - last_bytes) / dt
+                    last_bytes = downloaded_bytes
+                    last_time = now
+                    speed_mb = speed_bps / (1024 * 1024)
+                    speed_str = f"{speed_mb:.1f} MB/s"
+                    remaining = total - downloaded_bytes
+                    if speed_bps > 0:
+                        rem_sec = int(remaining / speed_bps)
+                        eta_str = f"{rem_sec // 60}m {rem_sec % 60}s" if rem_sec >= 60 else f"{rem_sec}s"
+
+                pct = int((downloaded_bytes / total) * 100) if total > 0 else 0
+                DOWNLOAD_TASKS[model_id] = {
+                    "status": "downloading",
+                    "percent": min(pct, 99),
+                    "downloaded": downloaded_bytes,
+                    "total": total,
+                    "speed_mb": speed_str,
+                    "eta": eta_str
+                }
+
+        # 3. Descarga simultánea en 8 hilos si soporta Range, o 1 hilo si no
+        num_workers = 8 if accept_ranges else 1
+        part_size = total // num_workers
+        ranges = []
+        for i in range(num_workers):
+            r_start = i * part_size
+            r_end = (i + 1) * part_size - 1 if i < num_workers - 1 else total - 1
+            ranges.append((r_start, r_end))
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
+            futures = [
+                executor.submit(_download_part, cdn_url, r[0], r[1], temp_path, on_chunk)
+                for r in ranges
+            ]
+            for f in concurrent.futures.as_completed(futures):
+                f.result()
+
+        # 4. Renombrar al archivo final al completar
         if temp_path.exists():
+            if target_path.exists():
+                target_path.unlink()
             temp_path.rename(target_path)
-            DOWNLOAD_TASKS[model_id] = {"status": "completed", "percent": 100}
+            DOWNLOAD_TASKS[model_id] = {
+                "status": "completed",
+                "percent": 100,
+                "downloaded": total,
+                "total": total,
+                "speed_mb": "Completado",
+                "eta": "0s"
+            }
     except Exception as e:
-        DOWNLOAD_TASKS[model_id] = {"status": "error", "error": str(e)}
+        DOWNLOAD_TASKS[model_id] = {"status": "error", "error": str(e), "percent": 0}
+        if temp_path.exists():
+            try:
+                temp_path.unlink()
+            except Exception:
+                pass
+    finally:
+        _process_next_in_queue()
+
+
+def _process_next_in_queue():
+    """Procesa el siguiente modelo de la cola."""
+    global IS_WORKER_ACTIVE
+    with QUEUE_LOCK:
+        if not DOWNLOAD_QUEUE:
+            IS_WORKER_ACTIVE = False
+            return
+        next_model_id = DOWNLOAD_QUEUE.pop(0)
+        IS_WORKER_ACTIVE = True
+
+    model_info = next((m for m in RECOMMENDED_MODELS if m["id"] == next_model_id), None)
+    if model_info:
+        base_dir = get_models_dir()
+        target = base_dir / model_info["category"] / model_info["filename"]
+        thread = threading.Thread(
+            target=_fast_download_worker,
+            args=(next_model_id, model_info["url"], target),
+            daemon=True
+        )
+        thread.start()
+    else:
+        _process_next_in_queue()
 
 
 def start_model_download(model_id: str) -> bool:
-    """Inicia la descarga de un modelo recomendado en segundo plano."""
+    """Añade un modelo a la cola de descarga y la inicia si no hay otra en marcha."""
+    global IS_WORKER_ACTIVE
     model_info = next((m for m in RECOMMENDED_MODELS if m["id"] == model_id), None)
     if not model_info:
         return False
-    
-    base_dir = get_models_dir()
-    target = base_dir / model_info["category"] / model_info["filename"]
-    
-    thread = threading.Thread(
-        target=_download_worker,
-        args=(model_id, model_info["url"], target),
-        daemon=True
-    )
-    thread.start()
+
+    with QUEUE_LOCK:
+        current_status = DOWNLOAD_TASKS.get(model_id, {}).get("status")
+        if current_status not in ("downloading", "queued"):
+            DOWNLOAD_QUEUE.append(model_id)
+            DOWNLOAD_TASKS[model_id] = {
+                "status": "queued",
+                "percent": 0,
+                "speed_mb": "En cola",
+                "eta": "Esperando turno"
+            }
+
+        if not IS_WORKER_ACTIVE:
+            _process_next_in_queue()
     return True
+
+
+def download_all_models() -> List[str]:
+    """Añade todos los modelos recomendados no instalados a la cola de descarga rápida."""
+    base_dir = get_models_dir()
+    queued = []
+    for m in RECOMMENDED_MODELS:
+        target = base_dir / m["category"] / m["filename"]
+        installed = target.exists() and target.stat().st_size > 1024 * 1024
+        if not installed:
+            start_model_download(m["id"])
+            queued.append(m["id"])
+    return queued
