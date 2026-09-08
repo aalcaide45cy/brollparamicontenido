@@ -2,12 +2,17 @@
 @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
 :root {
+    color-scheme: dark;
     --bg-main: #0B0F19;
     --bg-card: #111827;
     --bg-card-hover: #1F2937;
     --accent: #3B82F6;
     --accent-glow: rgba(59, 130, 246, 0.3);
     --border: #1E293B;
+}
+
+html, body {
+    color-scheme: dark;
 }
 
 body {
@@ -76,4 +81,42 @@ code, pre, .font-mono {
 .animate-pulse-subtle {
     animation: pulse-subtle 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
+
+/* Forzar modo oscuro en todos los desplegables (select y options) en Windows / Chrome / Edge */
+select, select option, optgroup {
+    color-scheme: dark !important;
+    background-color: #111827 !important;
+    color: #F3F4F6 !important;
+}
+
+select:focus {
+    outline: none;
+    border-color: #3B82F6 !important;
+}
+
+select option {
+    background-color: #111827 !important;
+    color: #F3F4F6 !important;
+    padding: 8px 12px;
+}
+
+select option:checked {
+    background-color: #1E40AF !important;
+    color: #FFFFFF !important;
+}
+
+select option:hover {
+    background-color: #1F2937 !important;
+}
+
+#zoom-selector {
+    background-color: transparent !important;
+    color: #E5E7EB !important;
+}
+
+#zoom-selector option {
+    background-color: #111827 !important;
+    color: #F3F4F6 !important;
+}
+
 
