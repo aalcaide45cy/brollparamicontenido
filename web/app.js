@@ -8,6 +8,7 @@ const state = {
     selectedBrollClips: [],
     searchResults: [],
     config: {},
+    modelsCategoryFilter: 'all',
 };
 
 // === ESCALADO Y ZOOM DE INTERFAZ ===
@@ -405,11 +406,80 @@ function selectFormat(type, durationSec, clickedBtn = null) {
     }
 }
 
+// === MODAL DE DESCARGA DE IA REQUERIDA ===
+function openAiDownloadModal() {
+    const modal = document.getElementById('ai-download-modal');
+    if (modal) {
+        modal.classList.remove('hidden');
+        modal.classList.add('flex');
+    }
+}
+
+function closeAiDownloadModal() {
+    const modal = document.getElementById('ai-download-modal');
+    if (modal) {
+        modal.classList.add('hidden');
+        modal.classList.remove('flex');
+    }
+}
+
+async function confirmDownloadScriptModel() {
+    closeAiDownloadModal();
+    // Descargar exclusivamente el modelo de guiones adecuado (Qwen 2.5 14B)
+    await downloadModel('qwen2.5-14b');
+    
+    // Si estaba configurado en Gemini sin clave, pasar a modo local
+    if (state.config && (!state.config.gemini_api_key && (!state.config.gemini_api_keys || state.config.gemini_api_keys.length === 0))) {
+        state.config.ai_provider = 'local';
+        const pSelect = document.getElementById('cfg-ai-provider');
+        if (pSelect) pSelect.value = 'local';
+        saveSettings().catch(() => {});
+    }
+
+    // Llevar al usuario a la pestaña 5 para ver el progreso de descarga multihilo
+    switchTab('tab-models');
+    showToast('Iniciando descarga multihilo de Qwen 2.5 14B (Motor de Guion)...', 'info');
+}
+
+async function checkScriptModelAvailable() {
+    const hasGeminiKey = state.config && (
+        (state.config.gemini_api_key && state.config.gemini_api_key.trim().length > 10) ||
+        (state.config.gemini_api_keys && state.config.gemini_api_keys.some(k => k.trim().length > 10))
+    );
+    const isGeminiMode = (!state.config || !state.config.ai_provider || state.config.ai_provider === 'gemini');
+
+    // Si tiene clave válida de Gemini y está en modo Gemini, no requiere descarga en disco
+    if (isGeminiMode && hasGeminiKey) {
+        return true;
+    }
+
+    // Verificar si hay algún modelo LLM local instalado o descargándose
+    try {
+        const resp = await fetch('/api/models/status');
+        if (resp.ok) {
+            const data = await resp.json();
+            const anyLlmInstalled = data.recommended?.some(m => m.category === 'LLMs' && (m.installed || m.downloading || m.queued)) ||
+                                   (data.categories?.LLMs?.count > 0);
+            return !!anyLlmInstalled;
+        }
+    } catch (e) {
+        console.warn('Error al verificar modelos locales:', e);
+    }
+    return false;
+}
+
 // === GENERACIÓN DE GUION ===
 async function generateScript() {
     const topic = document.getElementById('script-topic').value.trim();
     if (!topic) {
         showToast('Por favor, escribe un tema para el vídeo.', 'warning');
+        return;
+    }
+
+    // 1. Verificar si hay un motor de IA disponible (Gemini con clave o LLM local instalado)
+    const aiAvailable = await checkScriptModelAvailable();
+    if (!aiAvailable) {
+        openAiDownloadModal();
         return;
     }
 
@@ -470,6 +540,11 @@ async function generateScript() {
         saveFormDrafts();
         showToast('¡Guion generado y contrastado con éxito!', 'success');
     } catch (e) {
+        const errStr = (e.message || '').toLowerCase();
+        if (errStr.includes('api key') || errStr.includes('api_key') || errStr.includes('ningún motor local') || errStr.includes('no se pudo conectar')) {
+            openAiDownloadModal();
+            return;
+        }
         showToast(e.message, 'error');
     } finally {
         loader.classList.add('hidden');
@@ -850,6 +925,18 @@ async function openFolder(path) {
 // === GESTOR DE MODELOS (IAsModels) ===
 let modelsPollTimer = null;
 
+function filterModelsCategory(cat) {
+    state.modelsCategoryFilter = cat;
+    document.querySelectorAll('.models-filter-btn').forEach(btn => {
+        btn.className = 'models-filter-btn px-2.5 py-1 rounded-lg bg-gray-800 text-gray-300 hover:bg-gray-700 text-[11px] font-medium transition-all';
+    });
+    const activeBtn = document.getElementById(`filter-models-${cat}`);
+    if (activeBtn) {
+        activeBtn.className = 'models-filter-btn px-2.5 py-1 rounded-lg bg-blue-600 text-white text-[11px] font-semibold transition-all';
+    }
+    loadModelsStatus();
+}
+
 async function loadModelsStatus() {
     const totalEl = document.getElementById('models-total-size');
     const tableEl = document.getElementById('models-table-container');
@@ -863,7 +950,16 @@ async function loadModelsStatus() {
         tableEl.innerHTML = '';
         let hasActiveDownloads = false;
 
-        data.recommended.forEach(m => {
+        const filtered = data.recommended.filter(m => {
+            if (!state.modelsCategoryFilter || state.modelsCategoryFilter === 'all') return true;
+            return m.category === state.modelsCategoryFilter;
+        });
+
+        if (filtered.length === 0) {
+            tableEl.innerHTML = '<p class="text-xs text-gray-500 italic py-4 text-center">No hay modelos en esta categoría.</p>';
+        }
+
+        filtered.forEach(m => {
             const row = document.createElement('div');
             row.className = 'p-4 rounded-xl bg-gray-950/40 border border-gray-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3';
 
@@ -908,15 +1004,20 @@ async function loadModelsStatus() {
                 `;
             }
 
+            const badgeHtml = m.badge
+                ? `<span class="text-[10px] px-2 py-0.5 rounded bg-blue-900/40 text-blue-300 border border-blue-700/50 font-semibold">${m.badge}</span>`
+                : '';
+
             row.innerHTML = `
-                <div>
-                    <div class="font-bold text-xs text-white flex items-center gap-2">
-                        ${m.name}
+                <div class="space-y-1">
+                    <div class="font-bold text-xs text-white flex items-center gap-2 flex-wrap">
+                        <span>${m.name}</span>
                         <span class="text-[10px] px-2 py-0.5 rounded bg-gray-800 text-gray-400 border border-gray-700">${m.category}</span>
+                        ${badgeHtml}
                     </div>
-                    <div class="text-[11px] text-gray-400 mt-0.5">${m.description}</div>
+                    <div class="text-[11px] text-gray-400 leading-relaxed">${m.description}</div>
                 </div>
-                <div>${actionBtn}</div>
+                <div class="shrink-0">${actionBtn}</div>
             `;
             tableEl.appendChild(row);
         });

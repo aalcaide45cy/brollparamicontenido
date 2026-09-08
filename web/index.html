@@ -403,9 +403,19 @@
 
                 <!-- Lista de Modelos Recomendados para la RTX 4090 -->
                 <div class="space-y-3">
-                    <h3 class="font-bold text-white text-sm flex items-center gap-2">
-                        <i class="fa-solid fa-microchip text-emerald-400"></i> Modelos Optimizados para RTX 4090 (24 GB)
-                    </h3>
+                    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-1">
+                        <h3 class="font-bold text-white text-sm flex items-center gap-2">
+                            <i class="fa-solid fa-microchip text-emerald-400"></i> Modelos Optimizados para RTX 4090 (24 GB)
+                        </h3>
+                        <!-- Filtros por categoría -->
+                        <div id="models-category-filters" class="flex items-center gap-1.5 flex-wrap">
+                            <button onclick="filterModelsCategory('all')" id="filter-models-all" class="models-filter-btn px-2.5 py-1 rounded-lg bg-blue-600 text-white text-[11px] font-semibold transition-all">Todos (9)</button>
+                            <button onclick="filterModelsCategory('LLMs')" id="filter-models-LLMs" class="models-filter-btn px-2.5 py-1 rounded-lg bg-gray-800 text-gray-300 hover:bg-gray-700 text-[11px] font-medium transition-all">LLMs & Guion</button>
+                            <button onclick="filterModelsCategory('Vision')" id="filter-models-Vision" class="models-filter-btn px-2.5 py-1 rounded-lg bg-gray-800 text-gray-300 hover:bg-gray-700 text-[11px] font-medium transition-all">Visión Slicers</button>
+                            <button onclick="filterModelsCategory('ImageGen')" id="filter-models-ImageGen" class="models-filter-btn px-2.5 py-1 rounded-lg bg-gray-800 text-gray-300 hover:bg-gray-700 text-[11px] font-medium transition-all">Miniaturas FLUX</button>
+                            <button onclick="filterModelsCategory('Complementos')" id="filter-models-Complementos" class="models-filter-btn px-2.5 py-1 rounded-lg bg-gray-800 text-gray-300 hover:bg-gray-700 text-[11px] font-medium transition-all">Audio / DaVinci</button>
+                        </div>
+                    </div>
                     <div id="models-table-container" class="space-y-3">
                         <p class="text-xs text-gray-500 italic">Consultando estado de modelos locales...</p>
                     </div>
@@ -494,6 +504,62 @@
         </section>
 
     </main>
+
+    <!-- MODAL DE DESCARGA DE IA REQUERIDA -->
+    <div id="ai-download-modal" class="hidden fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+        <div class="bg-gray-900 border border-blue-500/50 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-5 animate-in fade-in zoom-in-95 duration-200">
+            <div class="flex items-start gap-4">
+                <div class="w-12 h-12 rounded-xl bg-blue-600/20 border border-blue-500/40 flex items-center justify-center text-blue-400 text-2xl shrink-0">
+                    <i class="fa-solid fa-brain"></i>
+                </div>
+                <div class="flex-1">
+                    <div class="flex items-center justify-between">
+                        <h3 class="text-base font-bold text-white flex items-center gap-2">
+                            Motor de IA no detectado
+                        </h3>
+                        <button onclick="closeAiDownloadModal()" class="text-gray-400 hover:text-gray-200 text-sm">
+                            <i class="fa-solid fa-xmark"></i>
+                        </button>
+                    </div>
+                    <p class="text-xs text-gray-400 mt-1 leading-relaxed">
+                        Para redactar guiones técnicos con marcas [B-ROLL] en tu equipo sin pagar nada y de forma 100% privada, necesitas descargar el modelo de IA adecuado para esta función:
+                    </p>
+                </div>
+            </div>
+
+            <!-- Ficha del Modelo Recomendado -->
+            <div class="p-4 rounded-xl bg-gray-950/80 border border-blue-900/60 space-y-2">
+                <div class="flex items-center justify-between">
+                    <div class="flex items-center gap-2">
+                        <span id="modal-model-name" class="font-bold text-sm text-blue-300">Qwen 2.5 14B Instruct</span>
+                        <span class="px-2 py-0.5 rounded bg-blue-900/40 text-blue-400 border border-blue-800/60 text-[10px] font-semibold">Motor de Guion</span>
+                    </div>
+                    <span id="modal-model-size" class="px-2.5 py-0.5 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/30 text-xs font-mono font-bold">8.4 GB</span>
+                </div>
+                <p id="modal-model-desc" class="text-[11px] text-gray-300 leading-normal">
+                    Optimizado para tu <strong>NVIDIA RTX 4090 (24 GB)</strong>. Excelente redacción en español, ganchos de retención para YouTube y dominio del vocabulario maker e impresión 3D.
+                </p>
+                <div class="text-[10px] text-emerald-400 flex items-center gap-1.5 pt-1 font-medium">
+                    <i class="fa-solid fa-bolt"></i> Descarga ultrarrápida (8 conexiones paralelas concurrentes).
+                </div>
+            </div>
+
+            <!-- Acciones -->
+            <div class="space-y-2 pt-1">
+                <div class="flex flex-col sm:flex-row items-center justify-end gap-2.5">
+                    <button type="button" onclick="closeAiDownloadModal()" class="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs font-semibold transition-all">
+                        Cancelar
+                    </button>
+                    <button type="button" onclick="confirmDownloadScriptModel()" class="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold shadow-lg shadow-blue-600/30 flex items-center justify-center gap-2 transition-all">
+                        <i class="fa-solid fa-cloud-arrow-down"></i> <span id="modal-btn-text">Descargar Este Modelo (8.4 GB)</span>
+                    </button>
+                </div>
+                <p class="text-[10px] text-gray-500 text-center">
+                    💡 <em>Nota: Si prefieres no descargar modelos a disco, puedes usar Google Gemini 100% gratis poniendo tu clave en Ajustes.</em>
+                </p>
+            </div>
+        </div>
+    </div>
 
     <!-- NOTIFICACIONES TOAST -->
     <div id="toast" class="fixed bottom-6 right-6 max-w-sm px-4 py-3 rounded-xl bg-gray-900 border border-gray-700 shadow-2xl text-xs text-white transform translate-y-20 opacity-0 transition-all duration-300 z-50 flex items-center gap-2">
