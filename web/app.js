@@ -541,8 +541,21 @@ async function generateScript() {
         showToast('¡Guion generado y contrastado con éxito!', 'success');
     } catch (e) {
         const errStr = (e.message || '').toLowerCase();
-        if (errStr.includes('api key') || errStr.includes('api_key') || errStr.includes('ningún motor local') || errStr.includes('no se pudo conectar')) {
+        if (
+            errStr.includes('api key') ||
+            errStr.includes('api_key') ||
+            errStr.includes('agotado') ||
+            errStr.includes('cuota') ||
+            errStr.includes('resource_exhausted') ||
+            errStr.includes('depleted') ||
+            errStr.includes('429') ||
+            errStr.includes('404') ||
+            errStr.includes('not_found') ||
+            errStr.includes('ningún motor local') ||
+            errStr.includes('no se pudo conectar')
+        ) {
             openAiDownloadModal();
+            showToast(e.message, 'warning');
             return;
         }
         showToast(e.message, 'error');

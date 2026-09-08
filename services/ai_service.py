@@ -54,7 +54,17 @@ async def query_gemini(prompt: str, system_instruction: Optional[str] = None, us
     if not keys:
         raise ValueError("No se ha configurado ninguna clave API de Gemini en Ajustes.")
 
-    model_name = config.get("gemini_model", "gemini-2.0-flash")
+    model_name = config.get("gemini_model", "gemini-3.6-flash")
+
+    # Mapeo automático para modelos deprecados por Google API
+    DEPRECATED_ALIASES = {
+        "gemini-2.5-flash": "gemini-3.6-flash",
+        "gemini-2.0-flash": "gemini-3.6-flash",
+        "gemini-2.0-flash-lite": "gemini-3.5-flash-lite",
+        "gemini-1.5-flash": "gemini-3.5-flash",
+        "gemini-1.5-pro": "gemini-3.6-flash",
+    }
+    model_name = DEPRECATED_ALIASES.get(model_name, model_name)
 
     last_error = None
     for idx, key in enumerate(keys):
@@ -80,6 +90,12 @@ async def query_gemini(prompt: str, system_instruction: Optional[str] = None, us
             last_error = e
             print(f"[GEMINI ROTATION] Clave #{idx+1} agotada o con error ({e}). Rotando a siguiente clave...")
             continue
+
+    err_str = str(last_error)
+    if "RESOURCE_EXHAUSTED" in err_str or "credits are depleted" in err_str:
+        raise RuntimeError("Tu clave de Google Gemini ha agotado su cuota gratuita (Error 429). Puedes generar una nueva clave gratis en https://aistudio.google.com/app/apikey o usar el Motor Local RTX 4090.")
+    if "NOT_FOUND" in err_str or "is no longer available" in err_str:
+        raise RuntimeError(f"El modelo anterior de Gemini ya no está disponible según Google. Se ha actualizado a Gemini 3.6 Flash. Detalle: {last_error}")
 
     raise RuntimeError(f"Todas las claves de Gemini configuradas ({len(keys)}) fallaron. Último error: {last_error}")
 
