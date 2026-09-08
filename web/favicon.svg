@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <!-- Fondo gradiente oscuro profundo -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0F172A" />
+      <stop offset="100%" stop-color="#020617" />
+    </linearGradient>
+
+    <!-- Borde exterior sutil -->
+    <linearGradient id="borderGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38BDF8" stop-opacity="0.8" />
+      <stop offset="100%" stop-color="#6366F1" stop-opacity="0.2" />
+    </linearGradient>
+
+    <!-- Capa 0: Base Cyan Neón brillante -->
+    <linearGradient id="capa0Grad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#0284C7" />
+      <stop offset="50%" stop-color="#00F0FF" />
+      <stop offset="100%" stop-color="#38BDF8" />
+    </linearGradient>
+
+    <!-- Capa 1: Azul Índigo -->
+    <linearGradient id="capa1Grad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#2563EB" />
+      <stop offset="50%" stop-color="#60A5FA" />
+      <stop offset="100%" stop-color="#3B82F6" />
+    </linearGradient>
+
+    <!-- Capa 2: Violeta / AI Púrpura -->
+    <linearGradient id="capa2Grad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#6366F1" />
+      <stop offset="50%" stop-color="#818CF8" />
+      <stop offset="100%" stop-color="#A855F7" />
+    </linearGradient>
+
+    <!-- Boquilla Dorada / Extrusor -->
+    <linearGradient id="nozzleGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FDE047" />
+      <stop offset="100%" stop-color="#F59E0B" />
+    </linearGradient>
+
+    <!-- Filtro de resplandor Neón -->
+    <filter id="neonGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="2" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+
+  <!-- Contenedor redondeado estilo App Icon -->
+  <rect x="2" y="2" width="60" height="60" rx="16" fill="url(#bgGrad)" stroke="url(#borderGrad)" stroke-width="2" />
+
+  <!-- Sombra inferior de las capas -->
+  <ellipse cx="32" cy="50" rx="18" ry="4" fill="#00F0FF" opacity="0.25" filter="url(#neonGlow)" />
+
+  <!-- Capa 0 (Base / Capa Cero - Primera Capa PEI) -->
+  <path d="M16 43 L32 50 L48 43 L32 36 Z" fill="url(#capa0Grad)" />
+  <path d="M16 43 L32 50 L32 52.5 L16 45.5 Z" fill="#0369A1" />
+  <path d="M48 43 L32 50 L32 52.5 L48 45.5 Z" fill="#0C4A6E" />
+
+  <!-- Capa 1 (Intermedia) -->
+  <path d="M16 35 L32 42 L48 35 L32 28 Z" fill="url(#capa1Grad)" />
+  <path d="M16 35 L32 42 L32 37.5 L16 30.5 Z" fill="#1D4ED8" />
+  <path d="M48 35 L32 42 L32 37.5 L48 30.5 Z" fill="#1E3A8A" />
+
+  <!-- Capa 2 (Superior) -->
+  <path d="M16 27 L32 34 L48 27 L32 20 Z" fill="url(#capa2Grad)" />
+  <path d="M16 27 L32 34 L32 29.5 L16 22.5 Z" fill="#4F46E5" />
+  <path d="M48 27 L32 34 L32 29.5 L48 22.5 Z" fill="#3730A3" />
+
+  <!-- Boquilla / Extrusor Hotend de Impresión 3D -->
+  <path d="M28 10 L36 10 L33 16 L31 16 Z" fill="url(#nozzleGrad)" />
+  <circle cx="32" cy="18" r="1.5" fill="#FDE047" filter="url(#neonGlow)" />
+
+  <!-- Destello inteligente / Spark de IA -->
+  <path d="M44 14 L45.5 17.5 L49 19 L45.5 20.5 L44 24 L42.5 20.5 L39 19 L42.5 17.5 Z" fill="#00F0FF" opacity="0.9" />
+</svg>

@@ -309,6 +309,10 @@ if WEB_DIR.exists():
     async def serve_index():
         return FileResponse(str(WEB_DIR / "index.html"))
 
+    @app.get("/favicon.ico")
+    async def serve_favicon():
+        return FileResponse(str(WEB_DIR / "favicon.svg"), media_type="image/svg+xml")
+
 
 if __name__ == "__main__":
     # Vinculación estricta a 127.0.0.1 (Localhost) sin recarga automática para evitar bloqueos por descargas masivas o cambios de archivos
